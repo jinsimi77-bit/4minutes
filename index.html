@@ -358,7 +358,11 @@
     background: var(--ink); color: var(--panel); padding: 10px 18px; border-radius: 999px; font-size: 13px; text-align: center;
     box-shadow: 0 6px 20px rgba(0,0,0,.2); opacity: 0; pointer-events: none; transition: opacity .25s, transform .25s; }
   #toast.on { opacity: 1; transform: translate(-50%, 0); }
-  @media (max-width: 600px) { #toast { bottom: 76px; } }   /* above the sticky save / download bar */
+  @media (max-width: 600px) { #toast { bottom: 76px; } }
+  .lp-box { display: flex; flex-direction: column; align-items: center; gap: 10px; max-height: 92vh; }
+  .lp-box p { margin: 0; background: var(--panel); color: var(--ink); padding: 8px 16px; border-radius: 999px; font-size: 14px; font-weight: 600; }
+  .lp-box img { max-width: 100%; max-height: 74vh; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,.35);
+    -webkit-touch-callout: default; user-select: auto; }   /* above the sticky save / download bar */
 
   /* ================= phones ================= */
   @media (max-width: 600px) {
@@ -603,6 +607,29 @@
 </main>
 
 <!-- cat meme stickers (cut-out PNGs as data URLs) -->
+<script>
+// Written in old-style JavaScript on purpose: it must run even in the older engines inside apps
+// (WeChat / QQ / some Android WebViews). 1) add a few newer built-ins they lack, 2) if the main
+// script still can't start, say so and suggest opening the page in a normal browser.
+(function () {
+  if (!Array.prototype.flatMap) Array.prototype.flatMap = function (f, t) { return [].concat.apply([], this.map(f, t)); };
+  if (!Array.prototype.flat) Array.prototype.flat = function () { return [].concat.apply([], this); };
+  if (!Object.fromEntries) Object.fromEntries = function (list) {
+    var o = {}; Array.from(list).forEach(function (p) { o[p[0]] = p[1]; }); return o;
+  };
+  var errors = [];
+  window.addEventListener('error', function (e) { errors.push((e.message || 'error') + (e.lineno ? ' @' + e.lineno : '')); });
+  window.addEventListener('load', function () {
+    if (window.__pbReady) return;
+    var d = document.createElement('div');
+    d.style.cssText = 'position:fixed;left:12px;right:12px;bottom:12px;z-index:9999;background:#5b3f34;color:#fff;' +
+      'padding:14px 16px;border-radius:16px;font:14px/1.6 sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.3)';
+    d.innerHTML = '<b>页面没有加载成功</b><br>这个 App 里的浏览器版本太旧。请点右上角「…」，选「在浏览器打开」（Safari / Chrome 等）。' +
+      (errors.length ? '<br><small style="opacity:.65">' + errors[0].replace(/</g, '&lt;') + '</small>' : '');
+    document.body.appendChild(d);
+  });
+})();
+</script>
 <script src="cat-stickers.js"></script>
 <script>
 // ================= data =================
@@ -667,7 +694,7 @@ const FILTERS = [
 ];
 // the DV look that the 氛围 filters start from; each filter's own values override these
 const DV_BASE = { net: .8, ca: .45, chroma: .05, con: .1, sat: -.1, temp: .04, tint: .01, glow: .4, vig: .28, fade: .07 };
-FILTERS.forEach(f => { if (f.dv) f.g = { ...DV_BASE, ...f.dv }; });
+FILTERS.forEach(f => { if (f.dv) f.g = Object.assign({}, DV_BASE, f.dv); });
 FILTERS.forEach(f => f.cat = f.cat || '胶片');
 // cell size = size of each photo inside the final image (sets its shape)
 const LAND = [800, 600], SQUARE = [800, 800], PORT = [600, 800];
@@ -886,7 +913,7 @@ const BEAUTY_PRESETS = [
 // A profile = beauty values + makeup colours/styles + face sticker. Faces are numbered left→right
 // as seen on screen. "全部" (allProfile) applies to every face that has no profile of its own.
 const makeProfile = src => ({
-  beauty: { ...ZERO, ...(src ? src.beauty : BEAUTY_PRESETS[1].v) },
+  beauty: Object.assign({}, ZERO, src ? src.beauty : BEAUTY_PRESETS[1].v),
   color:  { lip: 0, blush: 0, shadow: 0, brow: 0, iris: 0, ...(src && src.color) },   // index into each colour list
   style:  { lip: 0, blush: 0, iris: 0, ...(src && src.style) },                       // index into each style list
   sticker: src ? src.sticker : null,                                                    // face sticker id
@@ -1393,7 +1420,7 @@ const CANVAS_BLUR = (() => {
     const c = document.createElement('canvas'); c.width = c.height = 9;
     const x = c.getContext('2d'); x.filter = 'blur(2px)'; x.fillStyle = '#fff'; x.fillRect(4, 4, 1, 1);
     return x.getImageData(1, 4, 1, 1).data[3] > 0;
-  } catch { return false; }
+  } catch (_e) { return false; }
 })();
 let softFallback = !CANVAS_BLUR;     // (can be flipped to test the iPhone path on a desktop browser)
 const softScratch = [document.createElement('canvas'), document.createElement('canvas')];
@@ -1557,7 +1584,8 @@ function ensureFace() {
   if (!wantsFace() || faceLoading) return faceLoading;
   faceState = 'loading'; updateFaceNote();
   faceLoading = (async () => {
-    const vision = await import(`${MP}/vision_bundle.mjs`);
+    // import() kept inside a string: older in-app engines can't even parse it, and would drop the whole page
+    const vision = await new Function('u', 'return import(u)')(`${MP}/vision_bundle.mjs`);
     const files = await vision.FilesetResolver.forVisionTasks(`${MP}/wasm`);
     const make = async (mode, delegate) => vision.FaceLandmarker.createFromOptions(files, {
       baseOptions: { modelAssetPath: MP_MODEL, delegate }, runningMode: mode, numFaces: 4 });
@@ -1642,7 +1670,7 @@ function beautified(p, filter = deco.filter, strength = deco.strength) {
   const key = beautyKey() + faceState + filter.name + strength + (fx ? '/' + effects.ambient : '') + (under ? '/U' : ''),
         hit = beautyCache.get(p);
   if (hit && hit.key === key) return hit.c;
-  const out = hit?.c || document.createElement('canvas');
+  const out = (hit && hit.c) || document.createElement('canvas');
   out.width = p.width; out.height = p.height;
   const octx = out.getContext('2d');
   const faces = stillFaces(p);
@@ -1667,7 +1695,7 @@ function liveLoop() {
   if (video.readyState >= 2 && video.videoWidth) {
     let faces = [];
     if (faceLive && wantsFace()) {
-      try { faces = sortFaces(faceLive.detectForVideo(video, performance.now()).faceLandmarks || [], $('mirror').checked); } catch {}
+      try { faces = sortFaces(faceLive.detectForVideo(video, performance.now()).faceLandmarks || [], $('mirror').checked); } catch (_e) {}
     }
     liveFaces = faces;
     setFaceCount(faces.length);
@@ -1710,7 +1738,7 @@ function refreshPreviews(final) {
   if (!$('step2').hidden && final) renderSlots();
 }
 function onBeautyChange(final) {
-  document.querySelectorAll('.beautyPanel').forEach(p => p._sync?.());
+  document.querySelectorAll('.beautyPanel').forEach(p => { if (p._sync) p._sync(); });
   if (wantsFace() && faceState === 'idle') ensureFace();
   updateFaceNote();
   refreshPreviews(final);
@@ -1817,7 +1845,7 @@ function buildBeautyPanel(panel) {
   range.onchange = () => onBeautyChange(true);
   panel.querySelector('.bp-reset').onclick = () => { retryFace(); Object.assign(beauty, ZERO, BEAUTY_PRESETS[1].v); onBeautyChange(true); };
   const cmp = panel.querySelector('.bp-compare');
-  cmp.onpointerdown = e => { e.preventDefault(); cmp.setPointerCapture?.(e.pointerId); setComparing(true); };
+  cmp.onpointerdown = e => { e.preventDefault(); if (cmp.setPointerCapture) cmp.setPointerCapture(e.pointerId); setComparing(true); };
   ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(ev => cmp.addEventListener(ev, () => setComparing(false)));
   cmp.onkeydown = e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); setComparing(true); } };
   cmp.onkeyup = () => setComparing(false);
@@ -1996,7 +2024,7 @@ function visibleRect(w, h) {
 // live: draw onto the camera layers (light layer screen-blended, frame layer unmirrored)
 function drawEffects(ctx, w, h, faces, t, src, live, mirrored = false) {
   if (!fxOn()) { if (live) { liveLight(null); liveFrame(null); } return; }
-  const kind = effects.ambient ? AMB_MAP[effects.ambient]?.kind : null;
+  const kind = effects.ambient && AMB_MAP[effects.ambient] ? AMB_MAP[effects.ambient].kind : null;
   // face effects first (frame overlays like the white vignette go on top of them)
   faces.forEach((lm, i) => { const s = profileFor(i).sticker; if (s) drawFaceFx(ctx, lm, w, h, s, t); });
   if (kind === 'frame') {
@@ -3052,7 +3080,7 @@ function showFaceMarks() {
 }
 function drawFaceMarks(ctx, anchors, mirrored) {
   anchors.forEach((a, k) => {
-    const i = a.i ?? k, on = faceMode === i;
+    const i = a.i != null ? a.i : k, on = faceMode === i;
     ctx.save();
     ctx.translate(a.x, a.y);
     if (mirrored) ctx.scale(-1, 1);          // keep the number readable on a mirrored layer
@@ -3097,7 +3125,7 @@ $('toShoot').onclick = () => { slots = Array(need()).fill(null); goStep(2); };
 
 // ================= step 2: shoot =================
 async function startCamera() {
-  if (!navigator.mediaDevices?.getUserMedia) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     $('camMsg').textContent = '当前浏览器不支持摄像头（需要 https 或 localhost），可以先上传照片';
     return;
   }
@@ -3144,7 +3172,7 @@ function camHelp(e) {
   return '<b>无法打开摄像头</b><br><small>' + (e.message || e.name) + '</small>' + tail;
 }
 function stopCamera() {
-  stream?.getTracks().forEach(t => t.stop()); stream = null;
+  if (stream) stream.getTracks().forEach(t => t.stop()); stream = null;
   $('fxLayer').hidden = true; $('lightLayer').hidden = true; $('frameLayer').hidden = true;
   video.srcObject = null; $('placeholder').hidden = false; $('switchBtn').disabled = true;
   updateShootButtons();
@@ -3241,7 +3269,7 @@ $('snapInput').onchange = $('fileInput').onchange = async e => {
       const c = document.createElement('canvas'); c.width = w; c.height = h;
       drawCover(c.getContext('2d'), bmp, bmp.width, bmp.height, false, w, h);
       slots[i] = c;
-    } catch { alert(`无法读取：${file.name}`); }
+    } catch (_e) { alert(`无法读取：${file.name}`); }
   }
   e.target.value = '';
   renderSlots();
@@ -3374,7 +3402,7 @@ function redraw() {
   // number of people = the most faces found in any photo (for the face selector)
   setFaceCount(Math.max(0, ...slots.map(s => detectFaces(s).length)));
   pv.marks = [];
-  pv.base = compose(slots, layout, { ...deco, marks: pv.marks }, $('caption').value.trim(), $('showDate').checked);
+  pv.base = compose(slots, layout, Object.assign({}, deco, { marks: pv.marks }), $('caption').value.trim(), $('showDate').checked);
   paintPreview();   // adds the free stickers on top and the editing layer
 }
 function stamp(d) {
@@ -3383,7 +3411,7 @@ function stamp(d) {
 }
 function saveCurrent() {
   const url = current.toDataURL('image/jpeg', 0.9);
-  if (shots[0]?.url !== url) { shots.unshift({ url, time: Date.now() }); save(); renderGallery(); }
+  if (!shots[0] || shots[0].url !== url) { shots.unshift({ url, time: Date.now() }); save(); renderGallery(); }
   return url;
 }
 $('saveBtn').onclick = () => { saveCurrent(); $('saveBtn').textContent = '已存 ✓'; setTimeout(() => $('saveBtn').textContent = SAVE_LABEL, 1500); };
@@ -3406,10 +3434,21 @@ function toast(msg, ms = 3500) {
   t.textContent = msg; t.classList.add('on');
   clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove('on'), ms);
 }
+// WeChat / QQ / Weibo browsers block downloads and the share sheet; there the way to save a picture is
+// to long-press it, so show it full-screen with that hint
+const IN_APP = /MicroMessenger|QQ\/|Weibo|KAKAOTALK|Line\//i.test(navigator.userAgent);
+function showLongPress(url) {
+  const m = document.createElement('div'); m.className = 'rt-mask lp-mask';
+  m.innerHTML = `<div class="lp-box"><p>长按图片 → 选「保存图片」，就会存进手机相册</p><img alt="你的照片"><button>关闭</button></div>`;
+  m.querySelector('img').src = url;
+  m.onclick = e => { if (e.target === m || e.target.tagName === 'BUTTON') m.remove(); };
+  document.body.appendChild(m);
+}
 function savePhoto(url, name) {
+  if (IN_APP) { showLongPress(url); return; }
   if (isPhone() && navigator.canShare) {
     let file = null;
-    try { file = dataUrlToFile(url, name); } catch {}
+    try { file = dataUrlToFile(url, name); } catch (_e) {}
     if (file && navigator.canShare({ files: [file] })) {
       toast('在弹出的菜单里选「存储图像」，照片就会存进手机相册');
       navigator.share({ files: [file] }).catch(e => {
@@ -3450,7 +3489,7 @@ $('retake').onclick = () => {
   const onKey = e => { if (e.key === 'Escape') close(); };
   mask.onclick = e => {
     if (e.target === mask) return close();
-    const a = e.target.closest('[data-a]')?.dataset.a;
+    const btn = e.target.closest('[data-a]'), a = btn && btn.dataset.a;
     if (a === 'cancel') close();
     if (a === 'all') go(slots.map((_, i) => i));
     if (a === 'ok' && pick.size) go([...pick]);
@@ -3817,7 +3856,7 @@ function compose(photos, L, D, caption, showDate) {
     scrapbook: { pad: 80, gap: 40, bottom: 210, r: 0 },
   }[st];
   // per-side padding (camera has a wide right side for its buttons)
-  g.padL = g.padL ?? g.pad; g.padR = g.padR ?? g.pad; g.padT = g.padT ?? g.pad;
+  if (g.padL == null) g.padL = g.pad; if (g.padR == null) g.padR = g.pad; if (g.padT == null) g.padT = g.pad;
   // wider collages get a taller text area and bigger text so it stays readable
   const k = 1 + (L.cols - 1) * .45;
   g.bottom = Math.round(g.bottom * k);
@@ -3860,7 +3899,7 @@ function compose(photos, L, D, caption, showDate) {
     return { p, x: g.padL + col * (PW + g.gap), y: g.padT + row * (PH + g.gap) };
   });
   rects.forEach(({ p: raw, x, y }) => {
-    const p = beautified(raw, D.filter, D.strength ?? 1);
+    const p = beautified(raw, D.filter, D.strength != null ? D.strength : 1);
     ctx.save();
     if (st === 'polaroid') { ctx.shadowColor = 'rgba(0,0,0,.15)'; ctx.shadowBlur = 8; ctx.fillStyle = '#000'; ctx.fillRect(x, y, PW, PH); ctx.shadowColor = 'transparent'; }
     if (st === 'scrapbook') {           // white photo border with a soft shadow, slightly tilted feel
@@ -3922,22 +3961,22 @@ function compose(photos, L, D, caption, showDate) {
   ctx.textBaseline = 'middle';
   const cxText = g.padL + (W - g.padL - g.padR) / 2;   // centre of the photo area (camera has a wide right side)
   if (st === 'film' && pos === 'bottom') {
-    const FT = { ...T, font: T.font === 'default' ? 'mono' : T.font, bold: T.font === 'default' ? false : T.bold };
+    const FT = Object.assign({}, T, { font: T.font === 'default' ? 'mono' : T.font, bold: T.font === 'default' ? false : T.bold });
     const fpx = Math.min(46 * k, W / 26) * (T.size || 1);
     ctx.textAlign = 'left'; styledText(ctx, FT, '▶ ' + (caption || 'PHOTO BOOTH'), g.padL, cy, fpx, T.color || ink);
-    if (showDate) { ctx.textAlign = 'right'; styledText(ctx, { ...FT, size: 1 }, dateText(), W - g.padR, cy, Math.min(46 * k, W / 26), T.color || ink); }
+    if (showDate) { ctx.textAlign = 'right'; styledText(ctx, Object.assign({}, FT, { size: 1 }), dateText(), W - g.padR, cy, Math.min(46 * k, W / 26), T.color || ink); }
   } else {
     ctx.textAlign = 'center';
     // over a photo the default colour is white so it stays readable
     const c2 = pos === 'photo' && !T.color ? '#ffffff' : col;
-    const T2 = pos === 'photo' && T.stroke === 'none' && !T.shadow ? { ...T, shadow: true } : T;
+    const T2 = pos === 'photo' && T.stroke === 'none' && !T.shadow ? Object.assign({}, T, { shadow: true }) : T;
     if (caption && showDate) {
       styledText(ctx, T2, caption, cxText, cy - small * .8, big, c2);
-      ctx.globalAlpha = .75; styledText(ctx, { ...T2, bold: false }, dateText(), cxText, cy + big * .55 + small * .2, small, c2); ctx.globalAlpha = 1;
+      ctx.globalAlpha = .75; styledText(ctx, Object.assign({}, T2, { bold: false }), dateText(), cxText, cy + big * .55 + small * .2, small, c2); ctx.globalAlpha = 1;
     } else if (caption) {
       styledText(ctx, T2, caption, cxText, cy, big, c2);
     } else if (showDate) {
-      ctx.globalAlpha = .8; styledText(ctx, { ...T2, bold: false }, dateText(), cxText, cy, Math.round(base * .65), c2); ctx.globalAlpha = 1;
+      ctx.globalAlpha = .8; styledText(ctx, Object.assign({}, T2, { bold: false }), dateText(), cxText, cy, Math.round(base * .65), c2); ctx.globalAlpha = 1;
     }
   }
   return c;
@@ -4546,7 +4585,7 @@ function syncStEdit() {
 $('stSize').oninput = () => { const p = placed[selSticker]; if (!p) return; p.scale = $('stSize').value / 100; $('stSizeOut').textContent = $('stSize').value; paintPreview(); };
 $('stRot').oninput = () => { const p = placed[selSticker]; if (!p) return; p.rot = $('stRot').value * Math.PI / 180; $('stRotOut').textContent = $('stRot').value + '°'; paintPreview(); };
 $('stFlip').onclick = () => { const p = placed[selSticker]; if (p) { p.flip = !p.flip; paintPreview(); } };
-$('stDup').onclick = () => { const p = placed[selSticker]; if (!p) return; placed.push({ ...p, x: p.x + .04, y: p.y + .03 }); selSticker = placed.length - 1; paintPreview(); syncStEdit(); };
+$('stDup').onclick = () => { const p = placed[selSticker]; if (!p) return; placed.push(Object.assign({}, p, { x: p.x + .04, y: p.y + .03 })); selSticker = placed.length - 1; paintPreview(); syncStEdit(); };
 $('stFront').onclick = () => { const p = placed[selSticker]; if (!p) return; placed.splice(selSticker, 1); placed.push(p); selSticker = placed.length - 1; paintPreview(); };
 $('stDel').onclick = () => removeSticker(selSticker);
 $('stClear').onclick = () => { placed.length = 0; selSticker = -1; paintPreview(); syncStEdit(); };
@@ -4674,7 +4713,7 @@ addEventListener('resize', () => { if (!$('step3').hidden) requestAnimationFrame
     }
     schedule();
   });
-  const up = e => { pointers.delete(e.pointerId); if (pointers.size === 0 || drag?.mode === 'pinch') drag = null; };
+  const up = e => { pointers.delete(e.pointerId); if (pointers.size === 0 || (drag && drag.mode === 'pinch')) drag = null; };
   ui.addEventListener('pointerup', up); ui.addEventListener('pointercancel', up);
   ui.addEventListener('wheel', e => {
     const p = placed[selSticker]; if (!p) return;
@@ -4707,7 +4746,7 @@ function withFont(id, text, then) {
   then();
   if (!document.fonts) return;
   const css = (FONTS.find(f => f.id === id) || FONTS[0]).css, spec = `bold 40px ${css}`;
-  try { if (document.fonts.check(spec, text || 'Aa')) return; } catch { return; }
+  try { if (document.fonts.check(spec, text || 'Aa')) return; } catch (_e) { return; }
   document.fonts.load(spec, text || 'Aa').then(then, () => {});
 }
 const redrawText = () => withFont(deco.text.font, $('caption').value + dateText(), () => { redraw(); });
@@ -4754,7 +4793,7 @@ function buildTextPanel() {
   $('txtSpace').oninput = () => { T.spacing = +$('txtSpace').value; $('txtSpaceOut').textContent = $('txtSpace').value; redraw(); };
   $('txtAsSticker').onclick = () => {
     const text = $('caption').value.trim() || '今天也超可爱';
-    placed.push({ id: 'text', text, T: { ...T }, x: .5, y: .3 + (placed.length % 4) * .08, scale: Math.min(.8, .14 + text.length * .045), rot: 0, flip: false });
+    placed.push({ id: 'text', text, T: Object.assign({}, T), x: .5, y: .3 + (placed.length % 4) * .08, scale: Math.min(.8, .14 + text.length * .045), rot: 0, flip: false });
     selSticker = placed.length - 1;
     withFont(T.font, text, () => { paintPreview(); syncStEdit(); });
     // jump to the sticker page so it can be moved / resized right away
@@ -4791,15 +4830,16 @@ function renderGallery() {
 $('clearBtn').onclick = () => { if (confirm('确定清空所有照片？')) { shots = []; save(); renderGallery(); } };
 function save() {
   for (let n = Math.min(shots.length, 20); n >= 0; n--) {
-    try { localStorage.setItem('photo-booth', JSON.stringify(shots.slice(0, n))); return; } catch {}
+    try { localStorage.setItem('photo-booth', JSON.stringify(shots.slice(0, n))); return; } catch (_e) {}
   }
 }
-try { shots = JSON.parse(localStorage.getItem('photo-booth') || '[]'); } catch { shots = []; }
+try { shots = JSON.parse(localStorage.getItem('photo-booth') || '[]'); } catch (_e) { shots = []; }
 
 // ================= init =================
 buildLayouts();
 renderGallery();
 goStep(1);
+window.__pbReady = true;   // the head script shows a help message if this never happens
 // test hook: fill slots with sample photos (no camera needed)
 window.__fillSample = () => { slots = Array.from({ length: need() }, (_, i) => fakePhoto(330 + i * 25)); renderSlots(); };
 </script>
