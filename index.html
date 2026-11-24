@@ -4186,7 +4186,7 @@ const kaomoji = (text, bg, fg) => {
   } };
 };
 
-const STICKER_GROUPS = ['猫猫', '星星', '爱心', '纽扣', '物件', '甜甜', '颜文字'];
+const STICKER_GROUPS = ['猫猫', '手写', '星星', '爱心', '纽扣', '物件', '甜甜', '颜文字'];
 const STICKER_LIB = [
   // ---- 星星 ----
   { g: '星星', id: 'felt-pink', draw: feltStar('#e8a2b4', '#fde7ec') },
@@ -4489,6 +4489,383 @@ const STICKER_LIB = [
     ['ヽ(・∀・)ﾉ', '#fff3c4', '#b7791f'], ['(=^･ω･^=)', '#ffe1ec', '#d6336c'], ['so cute!', '#ffffff', '#e8457f'],
   ].map(([t, bg, fg], i) => Object.assign({ g: '颜文字', id: 'kao-' + i }, kaomoji(t, bg, fg))),
 ];
+// the original stickers stay in the library, except the old 颜文字 pills (replaced by the sheet's 颜文字 below)
+STICKER_LIB.forEach(st => { if (st.g === '颜文字') st.g = '_old'; });
+
+// ================= sticker sheet =================
+// One look for the whole library, like a printed sticker sheet: soft pastels, a warm-brown ink outline,
+// little white shine marks, then a white die-cut edge and a soft shadow added automatically.
+// Each sticker's art is drawn once at 512px per unit of width and cached, so it stays crisp when exported.
+const SK = { ink: '#6b4a3a', pink: '#f7b4c6', rose: '#ec7f9e', butter: '#f7de8e', sky: '#aecdf0', skyDeep: '#7fa9dc',
+  sage: '#c3dca8', leaf: '#8dbb78', coral: '#f4a17f', cream: '#fff8ec', red: '#e9686c', brown: '#c99568',
+  crust: '#dba06a', lilac: '#d4c2f0', white: '#fffdf8' };
+const SK_PX = 256;            // pixels per art unit (a sticker 1 unit wide = 512px cache)
+const skFontsReady = document.fonts ? document.fonts.ready : Promise.resolve();
+function skRound(x, pts, r) {                     // closed polygon with rounded corners
+  const n = pts.length, mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  x.beginPath(); const m0 = mid(pts[n - 1], pts[0]); x.moveTo(m0[0], m0[1]);
+  for (let i = 0; i < n; i++) { const p = pts[i], q = mid(p, pts[(i + 1) % n]); x.arcTo(p[0], p[1], q[0], q[1], r); }
+  x.closePath();
+}
+const skStarPts = (cx, cy, R, r, n = 5, rot = -Math.PI / 2) =>
+  Array.from({ length: n * 2 }, (_, i) => { const a = rot + i * Math.PI / n, k = i % 2 ? r : R; return [cx + Math.cos(a) * k, cy + Math.sin(a) * k]; });
+function skHeart(x, cx, cy, s) {                  // s = half width
+  x.beginPath(); x.moveTo(cx, cy + s * .95);
+  x.bezierCurveTo(cx - s * 1.25, cy + s * .05, cx - s * 1.05, cy - s * 1.0, cx - s * .5, cy - s * .98);
+  x.bezierCurveTo(cx - s * .2, cy - s * .97, cx, cy - s * .7, cx, cy - s * .5);
+  x.bezierCurveTo(cx, cy - s * .7, cx + s * .2, cy - s * .97, cx + s * .5, cy - s * .98);
+  x.bezierCurveTo(cx + s * 1.05, cy - s * 1.0, cx + s * 1.25, cy + s * .05, cx, cy + s * .95);
+  x.closePath();
+}
+function skInk(x, path, fill, lw = .034) {        // filled shape with the brown ink outline
+  path(); if (fill) { x.fillStyle = fill; x.fill(); }
+  x.lineWidth = lw; x.strokeStyle = SK.ink; x.lineJoin = 'round'; x.lineCap = 'round'; x.stroke();
+}
+function skShine(x, cx, cy, r, a0 = 3.6, a1 = 4.4, lw = .045) {   // the little white highlight stroke
+  x.beginPath(); x.arc(cx, cy, r, a0, a1); x.strokeStyle = 'rgba(255,255,255,.85)'; x.lineWidth = lw; x.lineCap = 'round'; x.stroke();
+}
+function skLabel(x, text, font, unitSize, cx, cy, col) {   // small text inside art, drawn at real pixel size
+  const m = x.getTransform(), px = m.a * cx + m.c * cy + m.e, py = m.b * cx + m.d * cy + m.f;
+  x.save(); x.setTransform(1, 0, 0, 1, px, py);
+  x.font = font.replace('{px}', Math.round(unitSize * SK_PX) + 'px'); x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillStyle = col; x.fillText(text, 0, 0); x.restore();
+}
+function skDot(x, cx, cy, r, col) { x.beginPath(); x.arc(cx, cy, r, 0, Math.PI * 2); x.fillStyle = col; x.fill(); }
+function skDotsIn(x, path, col, step = .16, r = .035) {   // polka dots clipped to a shape
+  x.save(); path(); x.clip();
+  for (let yy = -2, row = 0; yy <= 2; yy += step, row++) for (let xx = -2 + (row % 2) * step / 2; xx <= 2; xx += step) skDot(x, xx, yy, r, col);
+  x.restore();
+}
+function skLine(x, pts, lw = .034, col = SK.ink) {
+  x.beginPath(); pts.forEach((p, i) => i ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1]));
+  x.strokeStyle = col; x.lineWidth = lw; x.lineCap = 'round'; x.lineJoin = 'round'; x.stroke();
+}
+function skFlower(x, cx, cy, r, n, petal, center, rot = -Math.PI / 2) {
+  const P = () => {
+    x.beginPath();
+    for (let i = 0; i < n; i++) { const a = rot + i * 2 * Math.PI / n, px = cx + Math.cos(a) * r * .55, py = cy + Math.sin(a) * r * .55;
+      x.moveTo(px + r * .47, py); x.arc(px, py, r * .47, 0, Math.PI * 2); }
+  };
+  // fill all petals first, outline the union by stroking under a second fill
+  P(); x.lineWidth = .068; x.strokeStyle = SK.ink; x.stroke(); x.fillStyle = petal; x.fill();
+  skInk(x, () => { x.beginPath(); x.arc(cx, cy, r * .3, 0, Math.PI * 2); }, center, .03);
+}
+// build a library sticker from an art function (art draws in units: x ∈ [-w, w], y ∈ [-h, h])
+function skSticker(g, id, art, w = 1, h = 1, needsFont = false) {
+  const st = { g, id, w, h, _cache: null };
+  st.render = () => {
+    const W = Math.round(2 * SK_PX * w), H = Math.round(2 * SK_PX * h);
+    const a = document.createElement('canvas'); a.width = W; a.height = H;
+    const ax = a.getContext('2d'); ax.translate(W / 2, H / 2); ax.scale(SK_PX, SK_PX);
+    art(ax, W, H);
+    // die-cut: the art's silhouette grown by ~20px, filled white, with a soft shadow under it
+    const cut = document.createElement('canvas'); cut.width = W; cut.height = H;
+    const cx = cut.getContext('2d'), R = SK_PX * .075;
+    for (let i = 0; i < 28; i++) { const t = i / 28 * Math.PI * 2; cx.drawImage(a, Math.cos(t) * R, Math.sin(t) * R); }
+    cx.drawImage(a, 0, 0);
+    cx.globalCompositeOperation = 'source-in'; cx.fillStyle = SK.white; cx.fillRect(0, 0, W, H);
+    const out = document.createElement('canvas'); out.width = W; out.height = H;
+    const ox = out.getContext('2d');
+    ox.save(); ox.shadowColor = 'rgba(107,74,58,.28)'; ox.shadowBlur = SK_PX * .07; ox.shadowOffsetY = SK_PX * .03;
+    ox.drawImage(cut, 0, 0); ox.restore();
+    ox.drawImage(a, 0, 0);
+    return out;
+  };
+  st.draw = (c, s) => {
+    if (!st._cache) st._cache = st.render();
+    c.drawImage(st._cache, -s * w / 2, -s * h / 2, s * w, s * h);
+  };
+  st.needsFont = needsFont;
+  return st;
+}
+// lettering: text fitted into the sticker box (drawn in pixel space so small fonts stay sharp)
+function skText(text, font, fill, opt = {}) {
+  return (x, W, H) => {
+    x.save(); x.setTransform(1, 0, 0, 1, W / 2, H / 2);
+    const pad = SK_PX * .2, maxW = W - pad * 2, maxH = H - pad * 2;
+    let size = maxH * (opt.k || .8);
+    x.font = `${opt.weight || 400} ${size}px ${font}`;
+    // the text plus the pill's side padding (and a tag's hole) must fit the box
+    const extra = (opt.bg ? .9 : 0) + (opt.tag ? .5 : 0), room = opt.bg ? W - SK_PX * .16 : maxW;
+    const need = x.measureText(text).width + size * extra;
+    if (need > room) { size *= room / need; x.font = `${opt.weight || 400} ${size}px ${font}`; }
+    x.textAlign = 'center'; x.textBaseline = 'middle'; x.lineJoin = 'round';
+    if (opt.bg) {                                  // pill / tag behind the text
+      const bw = Math.min(W - SK_PX * .16, x.measureText(text).width + size * .9), bh = Math.min(H - SK_PX * .16, size * 1.45);
+      x.save(); x.scale(SK_PX, SK_PX);
+      skInk(x, () => skRound(x, [[-bw / 2 / SK_PX, -bh / 2 / SK_PX], [bw / 2 / SK_PX, -bh / 2 / SK_PX], [bw / 2 / SK_PX, bh / 2 / SK_PX], [-bw / 2 / SK_PX, bh / 2 / SK_PX]], opt.tag ? .06 : bh / 2 / SK_PX), opt.bg, .028);
+      if (opt.tag) { skDot(x, -bw / 2 / SK_PX + .1, 0, .035, SK.cream); x.beginPath(); x.arc(-bw / 2 / SK_PX + .1, 0, .035, 0, 7); x.lineWidth = .02; x.strokeStyle = SK.ink; x.stroke(); }
+      x.restore();
+    }
+    if (opt.outline) { x.lineWidth = size * .09; x.strokeStyle = SK.ink; x.strokeText(text, opt.tag ? size * .25 : 0, size * .04); }
+    x.fillStyle = fill; x.fillText(text, opt.tag ? size * .25 : 0, size * .04);
+    x.restore();
+  };
+}
+
+const SHEET = [];
+const skAdd = (g, id, art, w, h, f) => SHEET.push(skSticker(g, id, art, w, h, f));
+const TAU2 = Math.PI * 2;
+
+// ---- 手写: hand-lettered words ----
+[
+  ['Hi!', '"Pacifico"', SK.rose, 1.2, .62, {}],
+  ['today', '"Caveat"', SK.skyDeep, 1.3, .55, { weight: 700, k: 1 }],
+  ['nice day', '"Gochi Hand"', SK.coral, 1.5, .5, { k: .95 }],
+  ['so cute', '"Pacifico"', SK.rose, 1.5, .55, {}],
+  ['love you', '"Caveat"', SK.red, 1.5, .55, { weight: 700, k: 1 }],
+  ['yay!', '"Fredoka"', SK.butter, 1.1, .6, { weight: 700, outline: true }],
+  ['best friends', '"Gochi Hand"', SK.skyDeep, 1.8, .5, { k: .95 }],
+  ['xoxo', '"Gochi Hand"', SK.rose, 1.2, .55, { k: 1 }],
+  ['4minutes', '"Fredoka"', SK.rose, 1.6, .5, { weight: 700, outline: false }],
+  ['Get!', '"Gochi Hand"', SK.ink, 1.1, .6, { k: 1 }],
+  ['happy day', '"Fredoka"', SK.ink, 1.5, .5, { weight: 600, bg: SK.butter, k: .66 }],
+  ['cheese~', '"Fredoka"', SK.white, 1.3, .5, { weight: 700, bg: SK.rose, k: .66 }],
+  ['everything is gentle', '"Caveat"', SK.ink, 2, .42, { weight: 700, bg: SK.sky, k: .75 }],
+  ['mood ♡', '"Gochi Hand"', SK.rose, 1.2, .5, { bg: SK.cream, k: .72 }],
+  ['OOTD', '"Fredoka"', SK.ink, 1.2, .46, { weight: 700, bg: SK.pink, tag: true, k: .66 }],
+  ['smile :)', '"Caveat"', SK.leaf, 1.3, .55, { weight: 700, k: 1 }],
+].forEach(([t, f, col, w, h, o], i) => skAdd('手写', 'sk-word-' + i, skText(t, f, col, o), w, h, true));
+
+// ---- 星星 ----
+skAdd('星星', 'sk-star-butter', x => { const p = skStarPts(0, .05, .72, .36); skInk(x, () => skRound(x, p, .1), SK.butter); skShine(x, -.05, .05, .42, 3.5, 4.2); });
+skAdd('星星', 'sk-star-pink', x => { const p = skStarPts(0, .05, .72, .36); skInk(x, () => skRound(x, p, .1), SK.pink); skShine(x, -.05, .05, .42, 3.5, 4.2); });
+skAdd('星星', 'sk-star-sky', x => { const p = skStarPts(0, .05, .72, .36); skInk(x, () => skRound(x, p, .1), SK.sky); skShine(x, -.05, .05, .42, 3.5, 4.2); });
+skAdd('星星', 'sk-star-dots', x => { const p = skStarPts(0, .05, .72, .36), P = () => skRound(x, p, .1);
+  P(); x.fillStyle = SK.cream; x.fill(); skDotsIn(x, P, SK.pink, .2, .045); skInk(x, P, null); });
+skAdd('星星', 'sk-sparkle', x => { const p = skStarPts(0, 0, .75, .2, 4); skInk(x, () => skRound(x, p, .06), SK.butter); skShine(x, -.03, -.03, .22, 3.6, 4.3, .04); });
+skAdd('星星', 'sk-sparkles', x => {
+  [[-.28, .12, .5, SK.pink], [.4, -.35, .3, SK.butter], [.42, .42, .22, SK.sky]].forEach(([cx, cy, r, col]) =>
+    skInk(x, () => skRound(x, skStarPts(cx, cy, r, r * .28, 4), .04), col, .03));
+});
+skAdd('星星', 'sk-moon', x => {
+  // crescent: a full disc, the bite erased, then the bite's edge inked only where it crosses the disc
+  const big = () => { x.beginPath(); x.arc(-.05, .02, .66, 0, TAU2); }, bite = () => { x.beginPath(); x.arc(.3, -.16, .5, 0, TAU2); };
+  skInk(x, big, SK.butter);
+  x.save(); x.globalCompositeOperation = 'destination-out'; bite(); x.fill(); x.restore();
+  x.save(); big(); x.clip(); bite(); x.lineWidth = .034; x.strokeStyle = SK.ink; x.stroke(); x.restore();
+  skShine(x, -.3, .05, .42, 2.3, 3.0, .045);
+  skInk(x, () => skRound(x, skStarPts(.46, .42, .2, .08), .03), SK.pink, .028);
+});
+skAdd('星星', 'sk-shooting', x => {
+  [[-.75, .5, -.1, .02], [-.72, .25, -.12, -.12], [-.5, .7, .02, .18]].forEach(([a, b, c, d], i) => skLine(x, [[a, b], [c, d]], .045, [SK.pink, SK.butter, SK.sky][i]));
+  skInk(x, () => skRound(x, skStarPts(.22, -.18, .5, .25), .07), SK.butter); skShine(x, .18, -.15, .28, 3.5, 4.2, .04);
+}, 1, 1);
+
+// ---- 爱心 ----
+const heartSticker = (id, fill, extra) => skAdd('爱心', id, x => { const P = () => skHeart(x, 0, .02, .68); skInk(x, P, fill); if (extra) extra(x, P); skShine(x, -.25, -.28, .2, 3.4, 4.5, .05); });
+heartSticker('sk-heart-pink', SK.pink);
+heartSticker('sk-heart-red', SK.red);
+heartSticker('sk-heart-stitch', SK.coral, (x) => { x.save(); x.setLineDash([.07, .06]); x.lineWidth = .025; x.strokeStyle = 'rgba(255,255,255,.9)';
+  skHeart(x, 0, .04, .5); x.stroke(); x.restore(); });
+heartSticker('sk-heart-dots', SK.rose, (x, P) => { skDotsIn(x, P, 'rgba(255,248,236,.9)', .2, .045); P(); x.lineWidth = .034; x.strokeStyle = SK.ink; x.stroke(); });
+skAdd('爱心', 'sk-hearts-two', x => {
+  skInk(x, () => skHeart(x, .2, .15, .48), SK.butter); skShine(x, .02, -.05, .14, 3.4, 4.5, .04);
+  skInk(x, () => skHeart(x, -.2, -.1, .5), SK.pink); skShine(x, -.38, -.32, .14, 3.4, 4.5, .04);
+});
+skAdd('爱心', 'sk-heart-balloon', x => {
+  skLine(x, [[0, .25], [.06, .45], [-.05, .62], [.03, .8]], .025);
+  skInk(x, () => skHeart(x, 0, -.2, .55), SK.rose); skShine(x, -.2, -.43, .16, 3.4, 4.5, .045);
+  skInk(x, () => { x.beginPath(); x.moveTo(-.06, .3); x.lineTo(.06, .3); x.lineTo(0, .22); x.closePath(); }, SK.rose, .025);
+}, .8, 1);
+skAdd('爱心', 'sk-letter', x => {
+  const W = .78, H = .5;
+  skInk(x, () => skRound(x, [[-W, -H], [W, -H], [W, H], [-W, H]], .06), SK.cream);
+  skLine(x, [[-W + .04, -H + .05], [0, .08], [W - .04, -H + .05]], .03);
+  skInk(x, () => skHeart(x, 0, .1, .17), SK.rose, .026);
+}, 1, .75);
+skAdd('爱心', 'sk-heart-bubble', x => {
+  // bubble: an oval that opens at the lower left into a small curved tail
+  skInk(x, () => { x.beginPath(); x.ellipse(0, -.1, .72, .55, 0, 2.15, 2.15 + TAU2 - .38);
+    x.quadraticCurveTo(-.42, .5, -.6, .66); x.quadraticCurveTo(-.32, .58, -.18, .42); x.closePath(); }, SK.white);
+  skInk(x, () => skHeart(x, 0, -.1, .3), SK.rose, .028); skShine(x, -.12, -.22, .09, 3.4, 4.5, .03);
+});
+
+// ---- 花花 ----
+skAdd('花花', 'sk-flower-pink', x => skFlower(x, 0, 0, .78, 5, SK.pink, SK.butter));
+skAdd('花花', 'sk-flower-butter', x => skFlower(x, 0, 0, .78, 5, SK.butter, SK.white));
+skAdd('花花', 'sk-flower-sky', x => skFlower(x, 0, 0, .78, 6, SK.sky, SK.butter));
+skAdd('花花', 'sk-daisy', x => {
+  for (let i = 0; i < 12; i++) { x.save(); x.rotate(i * TAU2 / 12); skInk(x, () => { x.beginPath(); x.ellipse(0, -.45, .12, .3, 0, 0, TAU2); }, SK.white, .026); x.restore(); }
+  skInk(x, () => { x.beginPath(); x.arc(0, 0, .24, 0, TAU2); }, SK.butter, .03); skDotsIn(x, () => { x.beginPath(); x.arc(0, 0, .22, 0, TAU2); }, 'rgba(201,149,104,.5)', .08, .015);
+});
+skAdd('花花', 'sk-tulip', x => {
+  skLine(x, [[0, .1], [0, .8]], .05, SK.leaf); skLine(x, [[0, .1], [0, .8]], .02, SK.ink);
+  skInk(x, () => { x.beginPath(); x.moveTo(0, .72); x.quadraticCurveTo(-.45, .55, -.38, .25); x.quadraticCurveTo(-.1, .4, 0, .72); }, SK.sage, .026);
+  skInk(x, () => { x.beginPath(); x.moveTo(-.38, -.55); x.lineTo(-.18, -.32); x.lineTo(0, -.62); x.lineTo(.18, -.32); x.lineTo(.38, -.55);
+    x.quadraticCurveTo(.46, .12, 0, .16); x.quadraticCurveTo(-.46, .12, -.38, -.55); x.closePath(); }, SK.pink);
+  skShine(x, -.12, -.12, .18, 3.0, 3.9, .04);
+}, .9, 1);
+skAdd('花花', 'sk-clover', x => {
+  for (let i = 0; i < 4; i++) { x.save(); x.rotate(i * Math.PI / 2 + Math.PI / 4); skInk(x, () => skHeart(x, 0, -.32, .3), SK.sage, .03); x.restore(); }
+  skLine(x, [[0, 0], [.15, .45], [.3, .75]], .035);
+});
+skAdd('花花', 'sk-sprig', x => {
+  skLine(x, [[-.1, .85], [0, .2], [.05, -.8]], .03);
+  [[-1, -.55, .4], [1, -.35, -.4], [-1, -.05, .5], [1, .2, -.5], [-1, .45, .55]].forEach(([s, y, r]) => {
+    x.save(); x.translate(.02, y); x.rotate(s * .9); skInk(x, () => { x.beginPath(); x.ellipse(0, -.2, .1, .22, 0, 0, TAU2); }, SK.sage, .026); x.restore(); });
+}, .7, 1);
+skAdd('花花', 'sk-blossom', x => {
+  for (let i = 0; i < 5; i++) { x.save(); x.rotate(i * TAU2 / 5);
+    skInk(x, () => { x.beginPath(); x.moveTo(0, 0); x.bezierCurveTo(-.42, -.2, -.32, -.72, -.08, -.74); x.lineTo(0, -.64); x.lineTo(.08, -.74);
+      x.bezierCurveTo(.32, -.72, .42, -.2, 0, 0); x.closePath(); }, '#fbd3dd', .03); x.restore(); }
+  for (let i = 0; i < 5; i++) { const a = i * TAU2 / 5 - Math.PI / 2; skLine(x, [[0, 0], [Math.cos(a) * .22, Math.sin(a) * .22]], .02, SK.rose); skDot(x, Math.cos(a) * .24, Math.sin(a) * .24, .03, SK.rose); }
+});
+
+// ---- 甜甜 ----
+skAdd('甜甜', 'sk-strawberry', x => {
+  const P = () => { x.beginPath(); x.moveTo(0, .78); x.bezierCurveTo(-.7, .3, -.62, -.42, 0, -.42); x.bezierCurveTo(.62, -.42, .7, .3, 0, .78); x.closePath(); };
+  skInk(x, P, SK.red);
+  for (let i = 0; i < 9; i++) { const a = [-.3, 0, .3, -.38, -.13, .13, .38, -.18, .18][i], b = [-.15, -.2, -.15, .1, .08, .08, .1, .35, .35][i];
+    x.beginPath(); x.ellipse(a, b, .025, .04, 0, 0, TAU2); x.fillStyle = SK.butter; x.fill(); }
+  skInk(x, () => skRound(x, skStarPts(0, -.45, .32, .13, 5, Math.PI / 2), .03), SK.leaf, .028);
+  skShine(x, -.18, -.05, .24, 3.2, 3.9, .045);
+});
+skAdd('甜甜', 'sk-cherries', x => {
+  skLine(x, [[-.3, .3], [-.05, -.55], [.1, -.7]], .03); skLine(x, [[.32, .25], [.05, -.5]], .03);
+  skInk(x, () => { x.beginPath(); x.ellipse(.15, -.62, .2, .09, -.6, 0, TAU2); }, SK.leaf, .026);
+  [[-.32, .42], [.34, .38]].forEach(([cx, cy]) => { skInk(x, () => { x.beginPath(); x.arc(cx, cy, .3, 0, TAU2); }, SK.red); skShine(x, cx - .04, cy - .02, .18, 3.4, 4.2, .045); });
+});
+skAdd('甜甜', 'sk-apple', x => {
+  const P = () => { x.beginPath(); x.moveTo(0, -.38); x.bezierCurveTo(.35, -.62, .82, -.4, .7, .12); x.bezierCurveTo(.6, .6, .25, .78, 0, .66);
+    x.bezierCurveTo(-.25, .78, -.6, .6, -.7, .12); x.bezierCurveTo(-.82, -.4, -.35, -.62, 0, -.38); x.closePath(); };
+  skInk(x, P, SK.red); skShine(x, -.25, .02, .32, 3.3, 3.95, .05);
+  skLine(x, [[0, -.38], [.05, -.72]], .04);
+  skInk(x, () => { x.beginPath(); x.ellipse(.22, -.62, .18, .08, -.4, 0, TAU2); }, SK.leaf, .026);
+});
+skAdd('甜甜', 'sk-tomato', x => {
+  skInk(x, () => { x.beginPath(); x.ellipse(0, .1, .74, .62, 0, 0, TAU2); }, '#ef6f5e'); skShine(x, -.28, .02, .3, 3.4, 4.1, .05);
+  skInk(x, () => skRound(x, skStarPts(0, -.42, .36, .12, 6), .03), SK.leaf, .028); skLine(x, [[0, -.45], [.06, -.68]], .035);
+});
+skAdd('甜甜', 'sk-croissant', x => {
+  // one crescent body (outer arch, inner arch, tapered tips), then the rolled layers as curved lines
+  const body = () => { x.beginPath(); x.moveTo(-.86, .3);
+    x.bezierCurveTo(-.72, -.55, .72, -.55, .86, .3);          // outer arch
+    x.bezierCurveTo(.66, .22, .5, .14, .36, .2);              // right tip
+    x.bezierCurveTo(.12, .02, -.12, .02, -.36, .2);           // inner arch
+    x.bezierCurveTo(-.5, .14, -.66, .22, -.86, .3); x.closePath(); };
+  skInk(x, body, SK.crust);
+  x.save(); body(); x.clip();
+  [-.42, -.14, .14, .42].forEach(k => { x.beginPath(); x.moveTo(k * 1.05, -.38); x.quadraticCurveTo(k * 1.5, -.05, k * 1.25, .24);
+    x.lineWidth = .026; x.strokeStyle = SK.brown; x.lineCap = 'round'; x.stroke(); });
+  x.restore();
+  skShine(x, 0, .1, .4, 3.75, 4.35, .04);
+}, 1, .75);
+skAdd('甜甜', 'sk-cake', x => {
+  skInk(x, () => { x.beginPath(); x.moveTo(-.7, -.1); x.lineTo(.7, -.42); x.lineTo(.7, .5); x.lineTo(-.7, .5); x.closePath(); }, '#fde9b8');
+  skLine(x, [[-.7, .15], [.7, .1]], .07, SK.pink); skLine(x, [[-.7, .15], [.7, .1]], .02, SK.ink);
+  skInk(x, () => { x.beginPath(); x.moveTo(-.74, -.1); x.lineTo(.74, -.44); x.quadraticCurveTo(.4, -.2, .2, -.24); x.quadraticCurveTo(-.2, -.02, -.74, -.1); x.closePath(); }, SK.white, .028);
+  const P = () => { x.beginPath(); x.moveTo(.32, -.32); x.bezierCurveTo(.02, -.5, .08, -.82, .32, -.8); x.bezierCurveTo(.56, -.82, .62, -.5, .32, -.32); };
+  skInk(x, P, SK.red, .028); skDot(x, .26, -.62, .02, SK.butter); skDot(x, .38, -.58, .02, SK.butter);
+}, 1, .95);
+skAdd('甜甜', 'sk-macaron', x => {
+  skInk(x, () => { x.beginPath(); x.ellipse(0, .22, .7, .26, 0, 0, TAU2); }, SK.pink);
+  skInk(x, () => skRound(x, [[-.66, -.08], [.66, -.08], [.66, .14], [-.66, .14]], .1), SK.cream, .028);
+  skInk(x, () => { x.beginPath(); x.ellipse(0, -.22, .7, .3, 0, 0, TAU2); }, SK.pink); skShine(x, -.18, -.1, .34, 3.6, 4.2, .045);
+}, 1, .8);
+skAdd('甜甜', 'sk-icecream', x => {
+  skInk(x, () => { x.beginPath(); x.moveTo(-.36, -.02); x.lineTo(.36, -.02); x.lineTo(0, .85); x.closePath(); }, SK.crust);
+  x.save(); x.beginPath(); x.moveTo(-.36, -.02); x.lineTo(.36, -.02); x.lineTo(0, .85); x.closePath(); x.clip();
+  for (let k = -1; k <= 1; k += .22) { skLine(x, [[k - .5, -.1], [k + .5, .9]], .02, SK.brown); skLine(x, [[k + .5, -.1], [k - .5, .9]], .02, SK.brown); } x.restore();
+  skInk(x, () => { x.beginPath(); x.arc(0, -.3, .42, Math.PI * .95, Math.PI * .05); x.lineTo(.42, -.08); for (let i = 0; i < 4; i++) x.arc(.315 - i * .21, -.06, .105, 0, Math.PI); x.closePath(); }, SK.pink);
+  skShine(x, -.15, -.32, .2, 3.4, 4.2, .04); skDot(x, .08, -.75, .1, SK.red);
+}, .75, 1);
+skAdd('甜甜', 'sk-latte', x => {
+  skInk(x, () => { x.beginPath(); x.arc(.58, .08, .2, -1.4, 1.4); }, null, .06);
+  skInk(x, () => { x.beginPath(); x.moveTo(-.62, -.3); x.lineTo(.62, -.3); x.quadraticCurveTo(.6, .62, 0, .62); x.quadraticCurveTo(-.6, .62, -.62, -.3); x.closePath(); }, SK.sky);
+  skInk(x, () => { x.beginPath(); x.ellipse(0, -.3, .62, .16, 0, 0, TAU2); }, '#b98563', .03);
+  x.save(); x.scale(1, .45); skHeart(x, 0, -.66, .16); x.fillStyle = SK.cream; x.fill(); x.restore();
+  skLine(x, [[-.2, -.55], [-.15, -.75]], .025, 'rgba(107,74,58,.5)'); skLine(x, [[.15, -.55], [.2, -.75]], .025, 'rgba(107,74,58,.5)');
+}, 1, .9);
+
+// ---- 手账 ----
+const skBow = (id, col) => skAdd('手账', id, x => {
+  skInk(x, () => { x.beginPath(); x.moveTo(-.08, .05); x.lineTo(-.4, .7); x.lineTo(-.2, .62); x.lineTo(-.1, .76); x.lineTo(.02, .1); x.closePath(); }, col, .03);
+  skInk(x, () => { x.beginPath(); x.moveTo(.08, .05); x.lineTo(.4, .7); x.lineTo(.2, .62); x.lineTo(.1, .76); x.lineTo(-.02, .1); x.closePath(); }, col, .03);
+  skInk(x, () => { x.beginPath(); x.moveTo(0, 0); x.bezierCurveTo(-.3, -.5, -.85, -.42, -.72, .02); x.bezierCurveTo(-.62, .36, -.25, .2, 0, 0); x.closePath(); }, col);
+  skInk(x, () => { x.beginPath(); x.moveTo(0, 0); x.bezierCurveTo(.3, -.5, .85, -.42, .72, .02); x.bezierCurveTo(.62, .36, .25, .2, 0, 0); x.closePath(); }, col);
+  skInk(x, () => { x.beginPath(); x.ellipse(0, 0, .14, .16, 0, 0, TAU2); }, col);
+  skShine(x, -.42, -.08, .16, 3.4, 4.3, .04); skShine(x, .3, -.08, .16, 3.4, 4.3, .04);
+});
+skBow('sk-bow-pink', SK.pink); skBow('sk-bow-sky', SK.sky);
+skAdd('手账', 'sk-cloud', x => {
+  skInk(x, () => { x.beginPath(); x.moveTo(-.62, .32); x.arc(-.5, .1, .24, Math.PI * .6, Math.PI * 1.55); x.arc(-.12, -.12, .34, Math.PI * 1.15, Math.PI * 1.85);
+    x.arc(.32, -.02, .3, Math.PI * 1.3, Math.PI * .05 + TAU2); x.arc(.52, .2, .17, -.6, Math.PI * .5); x.closePath(); }, SK.white);
+  skShine(x, -.18, -.08, .2, 3.4, 4.2, .035); skDot(x, -.25, .14, .035, SK.pink); skDot(x, .2, .14, .035, SK.pink);
+}, 1, .75);
+skAdd('手账', 'sk-rainbow', x => {
+  [[.7, SK.pink], [.55, SK.butter], [.4, SK.sky]].forEach(([r, col]) => { x.beginPath(); x.arc(0, .35, r, Math.PI, 0); x.lineWidth = .15; x.strokeStyle = SK.ink; x.stroke(); x.lineWidth = .1; x.strokeStyle = col; x.stroke(); });
+  [-.55, .55].forEach(cx => skInk(x, () => { x.beginPath(); x.arc(cx - .12, .38, .14, Math.PI * .5, Math.PI * 1.5); x.arc(cx + .04, .28, .17, Math.PI, 0); x.arc(cx + .2, .4, .12, -Math.PI / 2, Math.PI / 2); x.closePath(); }, SK.white, .028));
+}, 1, .75);
+skAdd('手账', 'sk-sun', x => {
+  for (let i = 0; i < 10; i++) { const a = i * TAU2 / 10; x.save(); x.rotate(a); skInk(x, () => skRound(x, [[-.08, -.56], [.08, -.56], [0, -.8]], .03), SK.butter, .026); x.restore(); }
+  skInk(x, () => { x.beginPath(); x.arc(0, 0, .48, 0, TAU2); }, SK.butter); skShine(x, -.05, -.05, .3, 3.5, 4.2, .045);
+  skDot(x, -.2, .12, .05, 'rgba(236,127,158,.45)'); skDot(x, .2, .12, .05, 'rgba(236,127,158,.45)');
+});
+skAdd('手账', 'sk-polaroid', x => {
+  x.save(); x.rotate(-.08);
+  skInk(x, () => skRound(x, [[-.6, -.72], [.6, -.72], [.6, .78], [-.6, .78]], .04), SK.cream);
+  skInk(x, () => skRound(x, [[-.48, -.6], [.48, -.6], [.48, .38], [-.48, .38]], .02), SK.sky, .026);
+  skInk(x, () => { x.beginPath(); x.arc(-.18, .38, .32, Math.PI, 0); x.arc(.28, .38, .22, Math.PI, 0); x.closePath(); }, SK.sage, .024);
+  skDot(x, .25, -.35, .09, SK.butter); skInk(x, () => skHeart(x, .36, .58, .09), SK.rose, .02);
+  x.restore();
+}, .85, 1);
+skAdd('手账', 'sk-ticket', x => {
+  const P = () => { x.beginPath(); x.moveTo(-.85, -.36); x.lineTo(.85, -.36); x.lineTo(.85, -.1); x.arc(.85, 0, .1, -Math.PI / 2, Math.PI / 2, true); x.lineTo(.85, .36);
+    x.lineTo(-.85, .36); x.lineTo(-.85, .1); x.arc(-.85, 0, .1, Math.PI / 2, -Math.PI / 2, true); x.closePath(); };
+  skInk(x, P, SK.butter); x.save(); x.setLineDash([.05, .05]); skLine(x, [[.45, -.32], [.45, .32]], .02); x.restore();
+  skLabel(x, 'ADMIT ONE', '700 {px} "Fredoka", sans-serif', .2, -.18, .02, SK.ink);
+  skInk(x, () => skHeart(x, .66, .02, .1), SK.rose, .02);
+}, 1.2, .55, true);
+skAdd('手账', 'sk-washi', x => {
+  const P = () => { x.beginPath(); x.moveTo(-.9, -.2); for (let i = 0; i <= 6; i++) x.lineTo(.9 - (i % 2) * .04, -.2 + i * .4 / 6); x.lineTo(-.9, .2);
+    for (let i = 0; i <= 6; i++) x.lineTo(-.9 + (i % 2) * .04, .2 - i * .4 / 6); x.closePath(); };
+  x.save(); x.rotate(-.12); P(); x.fillStyle = 'rgba(247,180,198,.92)'; x.fill(); skDotsIn(x, P, 'rgba(255,253,248,.95)', .13, .03); x.restore();
+}, 1.1, .5);
+skAdd('手账', 'sk-bunting', x => {
+  skLine(x, [[-.9, -.4], [-.3, -.22], [.3, -.22], [.9, -.4]], .025);
+  [[-.62, -.3, SK.pink], [0, -.22, SK.butter], [.62, -.3, SK.sky]].forEach(([cx, cy, col]) =>
+    skInk(x, () => skRound(x, [[cx - .22, cy], [cx + .22, cy], [cx, cy + .5]], .04), col, .028));
+}, 1.1, .6);
+skAdd('手账', 'sk-house', x => {
+  skInk(x, () => skRound(x, [[-.5, -.1], [.5, -.1], [.5, .72], [-.5, .72]], .03), SK.cream);
+  skInk(x, () => skRound(x, [[-.66, -.05], [0, -.68], [.66, -.05]], .05), SK.rose);
+  skInk(x, () => skRound(x, [[.24, -.62], [.4, -.62], [.4, -.3], [.24, -.3]], .02), SK.brown, .026);
+  skInk(x, () => skRound(x, [[-.36, .12], [-.06, .12], [-.06, .4], [-.36, .4]], .02), SK.sky, .026);
+  skLine(x, [[-.21, .12], [-.21, .4]], .02); skLine(x, [[-.36, .26], [-.06, .26]], .02);
+  skInk(x, () => skRound(x, [[.1, .3], [.34, .3], [.34, .72], [.1, .72]], .04), SK.butter, .026);
+}, .85, 1);
+skAdd('手账', 'sk-camera', x => {
+  skInk(x, () => skRound(x, [[-.75, -.38], [.75, -.38], [.75, .5], [-.75, .5]], .14), SK.pink);
+  skInk(x, () => skRound(x, [[-.42, -.52], [-.1, -.52], [-.1, -.38], [-.42, -.38]], .04), SK.pink, .028);
+  skInk(x, () => { x.beginPath(); x.arc(0, .06, .32, 0, TAU2); }, SK.white); skInk(x, () => { x.beginPath(); x.arc(0, .06, .2, 0, TAU2); }, SK.sky, .028);
+  skShine(x, -.04, .02, .12, 3.4, 4.3, .035); skDot(x, .55, -.22, .06, SK.butter);
+}, 1, .8);
+skAdd('手账', 'sk-tag', x => {
+  skInk(x, () => { x.beginPath(); x.moveTo(-.75, -.32); x.lineTo(.5, -.32); x.lineTo(.8, 0); x.lineTo(.5, .32); x.lineTo(-.75, .32); x.closePath(); }, SK.cream);
+  skInk(x, () => { x.beginPath(); x.arc(.48, 0, .06, 0, TAU2); }, SK.white, .022);
+  skLabel(x, 'for you', '700 {px} "Caveat", cursive', .3, -.15, .02, SK.rose);
+}, 1.1, .5, true);
+
+// ---- 颜文字: the internet faces, as soft pills ----
+[
+  ['ʕ•ᴥ•ʔ', SK.cream, SK.ink], ['(｡•ᴗ•｡)', SK.pink, SK.ink], ['ฅ^•ﻌ•^ฅ', SK.butter, SK.ink], ['(˶ᵔ ᵕ ᵔ˶)', SK.sky, SK.ink],
+  ['( ˘ ³˘)♡', SK.cream, SK.rose], ['٩(ˊᗜˋ*)و', SK.sage, SK.ink], ['(ᐢ. .ᐢ)', SK.lilac, SK.ink], ['≽^•⩊•^≼', SK.pink, SK.ink],
+  ['(｡•́︿•̀｡)', SK.sky, SK.ink], ['ヽ(・∀・)ﾉ', SK.butter, SK.ink], ['(=^･ω･^=)', SK.cream, SK.ink], ['¯\\_(ツ)_/¯', SK.white, SK.ink],
+  ['(ノ◕ヮ◕)ノ*:･ﾟ✧', SK.lilac, SK.ink], ['૮ ˶ᵔ ᵕ ᵔ˶ ა', SK.pink, SK.ink],
+].forEach(([t, bg, fg], i) => skAdd('颜文字', 'sk-kao-' + i,
+  skText(t, 'system-ui, "PingFang SC", "Microsoft YaHei", sans-serif', fg, { weight: 600, bg, k: .64 }), Math.min(2.1, .6 + t.length * .11), .5));
+
+// only 手写 and 颜文字 from the sheet are in use for now; the sheet's other drawings stay defined, hidden
+SHEET.forEach(st => { if (st.g !== '手写' && st.g !== '颜文字') st.g = '_sheet'; });
+STICKER_LIB.push(...SHEET);
+// text stickers drew with fallback fonts if the web fonts weren't loaded yet: redraw them once they are
+skFontsReady.then(() => Promise.all(['400 40px "Pacifico"', '700 40px "Caveat"', '400 40px "Gochi Hand"', '700 40px "Fredoka"', '600 40px "Fredoka"']
+  .map(f => document.fonts.load(f).catch(() => {})))).then(() => {
+  SHEET.forEach(st => { if (st.needsFont) { st._cache = null; delete thumbCache[st.id]; } });
+  if (stickerUiReady) renderStickerGrid();
+  if (typeof paintPreview === 'function' && placed.some(p => STICKER_MAP[p.id] && STICKER_MAP[p.id].needsFont)) paintPreview();
+});
 // cat meme stickers: the cut-out pictures, drawn as they are (box width 1 × s, height by aspect)
 STICKER_LIB.forEach(st => { st.w = st.w || 1; st.h = st.h || 1; });
 const STICKER_MAP = Object.fromEntries(STICKER_LIB.map(st => [st.id, st]));
