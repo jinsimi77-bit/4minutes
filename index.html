@@ -916,8 +916,14 @@ const wantsFace = () => allProfiles().some(profileOn);
 const MAKEUP_KEYS = ['lip', 'blush', 'shadow', 'iris', 'aegyo', 'brow'];
 const SHAPE_KEYS = ['slim', 'small', 'narrow', 'short', 'vline', 'chin', 'forehead', 'skull', 'eyes', 'eyedist', 'nose', 'mouth'];
 
+// Phones (iPhone especially) really run "mediump" at 16-bit precision (max ~65504), unlike desktop GPUs.
+// Ask for full precision where it exists, and keep the maths overflow-safe for phones that lack it.
 const FRAG = `
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
 precision mediump float;
+#endif
 uniform sampler2D u_tex;
 uniform vec2 u_px;
 uniform float u_smooth, u_white, u_rosy, u_sharp, u_radius;
@@ -957,20 +963,25 @@ uniform vec3 u_lipC, u_blushC, u_shadowC, u_browC, u_irisC;
 vec2 warp(vec2 uv) {
   if (u_hasFace < .5) return uv;
   vec2 p = uv * u_size;
+  // distances are divided by the radius BEFORE squaring: squaring pixel distances of a close-up face
+  // (hundreds of px) overflows 16-bit floats, and the warp then hit the whole picture
   for (int i = 0; i < 4; i++) {
     vec2 d = p - u_mag[i].xy;
-    float t = dot(d, d) / (u_mag[i].z * u_mag[i].z);
+    vec2 q = clamp(d / max(u_mag[i].z, 1.), -2., 2.);
+    float t = dot(q, q);
     if (t < 1.) p = u_mag[i].xy + d * (1. - u_mag[i].w * (1. - t) * (1. - t));
   }
   // 短脸: sample further away vertically -> the face gets shorter, smoothly fading out
   {
     vec2 d = p - u_vsq.xy;
-    float t = dot(d, d) / (u_vsq.z * u_vsq.z);
+    vec2 q = clamp(d / max(u_vsq.z, 1.), -2., 2.);
+    float t = dot(q, q);
     if (t < 1.) p.y = u_vsq.y + d.y * (1. + u_vsq.w * (1. - t) * (1. - t));
   }
   for (int i = 0; i < 32; i++) {
     vec2 d = p - u_mv[i].xy;
-    float t = dot(d, d) / (u_mvR[i] * u_mvR[i]);
+    vec2 q = clamp(d / max(u_mvR[i], 1.), -2., 2.);
+    float t = dot(q, q);
     if (t < 1.) p -= u_mv[i].zw * (1. - t) * (1. - t);
   }
   return p / u_size;
@@ -1123,7 +1134,7 @@ void main() {
     vec2 d = (v_uv - .5) * vec2(u_size.x / u_size.y, 1.);
     g *= 1. - u_gVig * smoothstep(.35, .95, length(d));
     // grain, strongest in the mid-tones like real film; chroma = coloured digital noise
-    vec2 pp = floor(v_uv * u_size) + u_seed;
+    vec2 pp = mod(floor(v_uv * u_size) + u_seed, 1024.);   // small numbers keep the noise random at low precision
     float mid = 1.2 - abs(L - .5) * 1.6;
     g += (hash(pp) - .5) * u_gGrain * mid;
     if (u_gChroma > .001)
@@ -1154,7 +1165,12 @@ function createBeautyRenderer(canvas) {
   };
   const prog = link(FRAG);
   // separable 9-tap gaussian (5 lookups thanks to linear filtering)
-  const blurProg = link(`precision mediump float; uniform sampler2D u_tex; uniform vec2 u_step; varying vec2 v_uv;
+  const blurProg = link(`#ifdef GL_FRAGMENT_PRECISION_HIGH
+    precision highp float;
+    #else
+    precision mediump float;
+    #endif
+    uniform sampler2D u_tex; uniform vec2 u_step; varying vec2 v_uv;
     void main() {
       vec3 s = texture2D(u_tex, v_uv).rgb * .227027;
       s += (texture2D(u_tex, v_uv + u_step * 1.384615).rgb + texture2D(u_tex, v_uv - u_step * 1.384615).rgb) * .316216;
@@ -1364,6 +1380,45 @@ const EYE_OPEN_L = [263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 
 const LID_R = [33, 246, 161, 160, 159, 158, 157, 173, 133], LID_L = [263, 466, 388, 387, 386, 385, 384, 398, 362];
 const LOW_R = [33, 7, 163, 144, 145, 153, 154, 155, 133], LOW_L = [263, 249, 390, 373, 374, 380, 381, 382, 362];
 const BROW_R = [70, 63, 105, 66, 107, 55, 65, 52, 53, 46], BROW_L = [300, 293, 334, 296, 336, 285, 295, 282, 283, 276];
+// Soft (blurred) drawing that works everywhere. Canvas `filter: blur()` is ignored by iPhone browsers
+// (all of them use Safari's engine), which left makeup with hard, cut-out edges there. Fallback:
+// draw the shape at low resolution and scale it back up smoothly — the upscale is the blur.
+const CANVAS_BLUR = (() => {
+  try {
+    const c = document.createElement('canvas'); c.width = c.height = 9;
+    const x = c.getContext('2d'); x.filter = 'blur(2px)'; x.fillStyle = '#fff'; x.fillRect(4, 4, 1, 1);
+    return x.getImageData(1, 4, 1, 1).data[3] > 0;
+  } catch { return false; }
+})();
+let softFallback = !CANVAS_BLUR;     // (can be flipped to test the iPhone path on a desktop browser)
+const softScratch = [document.createElement('canvas'), document.createElement('canvas')];
+// paint(ctx) draws the shape (it may set styles and transforms); x's alpha, blend mode and clip apply to the result
+function softDraw(x, sigma, paint) {
+  x.save();
+  if (!softFallback) { x.filter = `blur(${Math.max(.3, sigma).toFixed(1)}px)`; paint(x); x.restore(); return; }
+  const W = x.canvas.width, H = x.canvas.height;
+  const f = Math.max(1, sigma * 2.2);                       // a bilinear upscale by f blurs about f/2.2
+  const sw = Math.max(1, Math.round(W / f)), sh = Math.max(1, Math.round(H / f));
+  const a = softScratch[0];
+  if (a.width !== sw || a.height !== sh) { a.width = sw; a.height = sh; }
+  const ax = a.getContext('2d');
+  ax.setTransform(1, 0, 0, 1, 0, 0); ax.clearRect(0, 0, sw, sh);
+  const t = x.getTransform(), kx = sw / W, ky = sh / H;
+  ax.setTransform(t.a * kx, t.b * ky, t.c * kx, t.d * ky, t.e * kx, t.f * ky);
+  ax.lineCap = x.lineCap; ax.lineJoin = x.lineJoin; ax.globalAlpha = 1; ax.globalCompositeOperation = 'source-over';
+  paint(ax);
+  let src = a;
+  if (f > 2.5) {                                            // two smaller upscale steps look smoother than one big one
+    const mw = Math.round(Math.sqrt(sw * W)), mh = Math.round(Math.sqrt(sh * H)), b = softScratch[1];
+    if (b.width !== mw || b.height !== mh) { b.width = mw; b.height = mh; }
+    const bx = b.getContext('2d'); bx.clearRect(0, 0, mw, mh);
+    bx.imageSmoothingEnabled = true; bx.imageSmoothingQuality = 'high'; bx.drawImage(a, 0, 0, mw, mh);
+    src = b;
+  }
+  x.setTransform(1, 0, 0, 1, 0, 0); x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
+  x.drawImage(src, 0, 0, W, H);
+  x.restore();
+}
 function createMakeupMasks() {
   const c1 = document.createElement('canvas'), c2 = document.createElement('canvas');
   const x1 = c1.getContext('2d'), x2 = c2.getContext('2d');
@@ -1378,56 +1433,56 @@ function createMakeupMasks() {
       idx.forEach((i, k) => { const p = P(i); k ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1]); });
       if (close) x.closePath();
     };
-    const blur = (x, r) => { x.filter = 'blur(' + Math.max(.5, r).toFixed(1) + 'px)'; };
     for (const x of [x1, x2]) {
-      x.globalCompositeOperation = 'source-over'; x.filter = 'none';
+      x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'source-over'; x.globalAlpha = 1;
       x.fillStyle = '#000'; x.fillRect(0, 0, mw, mh);
       x.lineCap = x.lineJoin = 'round';
     }
     const eyeW = dist(P(33), P(133));
+    const fillPath = (idx, col) => x => { x.fillStyle = col; path(x, idx, true); x.fill(); };
 
     // --- c1 ---
     x1.globalCompositeOperation = 'lighter';
     // eyeshadow: thick soft stroke along the upper lid, raised a little
-    blur(x1, eyeW * .22); x1.strokeStyle = '#0000ff'; x1.lineWidth = eyeW * .38;
-    x1.save(); x1.translate(0, -eyeW * .14);
-    path(x1, LID_R); x1.stroke(); path(x1, LID_L); x1.stroke();
-    x1.restore();
+    softDraw(x1, eyeW * .22, x => {
+      x.strokeStyle = '#0000ff'; x.lineWidth = eyeW * .38; x.translate(0, -eyeW * .14);
+      path(x, LID_R); x.stroke(); path(x, LID_L); x.stroke();
+    });
     // blush, by style: 苹果肌 round on the cheeks · 晒伤妆 band across nose and cheeks ·
     // 微醺 high, just under the eyes · 斜扫 diagonal sweep towards the temples
-    blur(x1, faceW * .07); x1.fillStyle = '#00ff00';
-    const ell = (p, rx, ry, rot) => { x1.beginPath(); x1.ellipse(p[0], p[1], rx, ry, rot, 0, Math.PI * 2); x1.fill(); };
-    const bs = beautyStyle.blush;
-    [[50, 117, 234, -1], [280, 346, 454, 1]].forEach(([cheek, under, side, s]) => {
-      const p = P(cheek), q = P(under), t = P(side);
-      if (bs === 0) ell([p[0] + s * faceW * .02, p[1] - faceW * .01], faceW * .12, faceW * .075, s * -.35);
-      if (bs === 1) ell([(p[0] + q[0]) / 2, (p[1] + q[1]) / 2], faceW * .13, faceW * .06, s * -.15);
-      if (bs === 2) ell([q[0], q[1] + faceW * .02], faceW * .11, faceW * .05, s * -.1);
-      if (bs === 3) ell([(p[0] + t[0]) / 2, (p[1] + t[1]) / 2 - faceW * .02], faceW * .15, faceW * .055, s * -.6);
+    softDraw(x1, faceW * .07, x => {
+      x.fillStyle = '#00ff00';
+      const ell = (p, rx, ry, rot) => { x.beginPath(); x.ellipse(p[0], p[1], rx, ry, rot, 0, Math.PI * 2); x.fill(); };
+      const bs = beautyStyle.blush;
+      [[50, 117, 234, -1], [280, 346, 454, 1]].forEach(([cheek, under, side, s]) => {
+        const p = P(cheek), q = P(under), t = P(side);
+        if (bs === 0) ell([p[0] + s * faceW * .02, p[1] - faceW * .01], faceW * .12, faceW * .075, s * -.35);
+        if (bs === 1) ell([(p[0] + q[0]) / 2, (p[1] + q[1]) / 2], faceW * .13, faceW * .06, s * -.15);
+        if (bs === 2) ell([q[0], q[1] + faceW * .02], faceW * .11, faceW * .05, s * -.1);
+        if (bs === 3) ell([(p[0] + t[0]) / 2, (p[1] + t[1]) / 2 - faceW * .02], faceW * .15, faceW * .055, s * -.6);
+      });
+      if (bs === 1) { const n = P(197); ell(n, faceW * .07, faceW * .035, 0); }   // across the nose
     });
-    if (bs === 1) { const n = P(197); ell(n, faceW * .07, faceW * .035, 0); }   // across the nose
     // lips, by finish: 满涂 full · 咬唇 gradient from the centre (bitten-lip look) · 薄涂 sheer
-    const ls = beautyStyle.lip;
-    x1.fillStyle = '#ff0000';
+    const ls = beautyStyle.lip, red = '#ff0000';
     if (ls === 1) {
-      x1.globalAlpha = .35; blur(x1, faceW * .012); path(x1, LIPS_OUT, true); x1.fill();
-      x1.globalAlpha = 1; blur(x1, faceW * .035); path(x1, LIPS_IN, true); x1.fill();
-      blur(x1, faceW * .02); path(x1, LIPS_IN, true); x1.fill();
+      x1.globalAlpha = .35; softDraw(x1, faceW * .012, fillPath(LIPS_OUT, red));
+      x1.globalAlpha = 1; softDraw(x1, faceW * .035, fillPath(LIPS_IN, red));
+      softDraw(x1, faceW * .02, fillPath(LIPS_IN, red));
     } else {
       x1.globalAlpha = ls === 2 ? .55 : 1;
-      blur(x1, faceW * (ls === 2 ? .02 : .012)); path(x1, LIPS_OUT, true); x1.fill();
+      softDraw(x1, faceW * (ls === 2 ? .02 : .012), fillPath(LIPS_OUT, red));
     }
     x1.globalAlpha = 1;
     // cut-outs: open mouth and eyeballs get no colour
-    x1.globalCompositeOperation = 'source-over'; x1.fillStyle = '#000';
-    blur(x1, faceW * .008); path(x1, LIPS_IN, true); x1.fill();
-    blur(x1, eyeW * .06); path(x1, EYE_OPEN_R, true); x1.fill(); path(x1, EYE_OPEN_L, true); x1.fill();
+    x1.globalCompositeOperation = 'source-over';
+    softDraw(x1, faceW * .008, fillPath(LIPS_IN, '#000'));
+    softDraw(x1, eyeW * .06, x => { fillPath(EYE_OPEN_R, '#000')(x); fillPath(EYE_OPEN_L, '#000')(x); });
 
     // --- c2 ---
     x2.globalCompositeOperation = 'lighter';
     // brows
-    blur(x2, faceW * .012); x2.fillStyle = '#ff0000';
-    path(x2, BROW_R, true); x2.fill(); path(x2, BROW_L, true); x2.fill();
+    softDraw(x2, faceW * .012, x => { fillPath(BROW_R, red)(x); fillPath(BROW_L, red)(x); });
 
     drawEyes(lm, w, h);
   }
@@ -1446,28 +1501,29 @@ function createMakeupMasks() {
     const dist = (a, c) => Math.hypot(a[0] - c[0], a[1] - c[1]);
     const path = (x, pts, close) => { x.beginPath(); pts.forEach((p, k) => k ? x.lineTo(p[0], p[1]) : x.moveTo(p[0], p[1])); if (close) x.closePath(); };
     const shift = (pts, dy) => pts.map(p => [p[0], p[1] + dy]);
-    const blur = (x, r) => { x.filter = 'blur(' + Math.max(.3, r).toFixed(1) + 'px)'; };
     for (const x of [x3, x4]) {
-      x.globalCompositeOperation = 'source-over'; x.filter = 'none'; x.globalAlpha = 1;
+      x.setTransform(1, 0, 0, 1, 0, 0); x.globalCompositeOperation = 'source-over'; x.globalAlpha = 1;
       x.fillStyle = '#000'; x.fillRect(0, 0, mw, mh);
       x.lineCap = x.lineJoin = 'round';
     }
+    const circle = (c, rr, col, stroke, lw) => x => {
+      x.beginPath(); x.arc(c[0], c[1], rr, 0, Math.PI * 2);
+      if (stroke) { x.strokeStyle = col; x.lineWidth = lw; x.stroke(); } else { x.fillStyle = col; x.fill(); }
+    };
 
     for (const e of EYES) {
-      const lid = e.lid.map(P), low = e.low.map(P), open = e.open.map(P);
+      const low = e.low.map(P), open = e.open.map(P);
       const outer = P(e.outer), inner = P(e.inner), eyeW = dist(outer, inner);
 
       // 卧蚕 (drawn first so the eyeball cut-out below can clear it)
       x3.globalCompositeOperation = x4.globalCompositeOperation = 'lighter';
       const lowMid = low.slice(1, -1);
-      blur(x3, eyeW * .07); x3.strokeStyle = '#0000ff'; x3.lineWidth = eyeW * .2;
-      path(x3, shift(lowMid, eyeW * .13)); x3.stroke();
-      blur(x4, eyeW * .05); x4.strokeStyle = '#ff0000'; x4.lineWidth = eyeW * .06;
-      path(x4, shift(lowMid, eyeW * .27)); x4.stroke();
+      softDraw(x3, eyeW * .07, x => { x.strokeStyle = '#0000ff'; x.lineWidth = eyeW * .2; path(x, shift(lowMid, eyeW * .13)); x.stroke(); });
+      softDraw(x4, eyeW * .05, x => { x.strokeStyle = '#ff0000'; x.lineWidth = eyeW * .06; path(x, shift(lowMid, eyeW * .27)); x.stroke(); });
 
       // cut the eyeball out of c3 so nothing above paints on the white of the eye
-      x3.globalCompositeOperation = 'source-over'; x3.fillStyle = '#000';
-      blur(x3, eyeW * .02); path(x3, open, true); x3.fill();
+      x3.globalCompositeOperation = 'source-over';
+      softDraw(x3, eyeW * .02, x => { x.fillStyle = '#000'; path(x, open, true); x.fill(); });
       x3.globalCompositeOperation = 'lighter';
 
       // 美瞳 (G tint, B ring), clipped to the visible part of the eye
@@ -1475,13 +1531,12 @@ function createMakeupMasks() {
       const is = beautyStyle.iris;
       const r = r0 * [1, 1.14, 1.06, 1][is], ring = [.55, .8, 1, .25][is];
       x4.save(); path(x4, open, true); x4.clip();
-      blur(x4, r * .08); x4.fillStyle = '#00ff00';
-      x4.beginPath(); x4.arc(ic[0], ic[1], r, 0, Math.PI * 2); x4.fill();
-      x4.globalCompositeOperation = 'source-over'; x4.fillStyle = '#000';   // keep the pupil dark
-      blur(x4, r * .08); x4.beginPath(); x4.arc(ic[0], ic[1], r * .36, 0, Math.PI * 2); x4.fill();
+      softDraw(x4, r * .08, circle(ic, r, '#00ff00'));
+      x4.globalCompositeOperation = 'source-over';                          // keep the pupil dark
+      softDraw(x4, r * .08, circle(ic, r * .36, '#000'));
       x4.globalCompositeOperation = 'lighter';
-      x4.globalAlpha = ring; x4.strokeStyle = '#0000ff'; x4.lineWidth = r * (is === 2 ? .26 : .16);
-      blur(x4, r * .06); x4.beginPath(); x4.arc(ic[0], ic[1], r * .9, 0, Math.PI * 2); x4.stroke();
+      x4.globalAlpha = ring;
+      softDraw(x4, r * .06, circle(ic, r * .9, '#0000ff', true, r * (is === 2 ? .26 : .16)));
       x4.globalAlpha = 1;
       x4.restore();
     }
