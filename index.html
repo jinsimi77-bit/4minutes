@@ -107,7 +107,9 @@
     .side { position: static; max-height: none; }
   }
   .stage { position: relative; background: #000; border-radius: 16px; overflow: hidden; aspect-ratio: 4 / 3; display: grid; place-items: center; margin: 0 auto; }
-  .stage video, .stage canvas.view { width: 100%; height: 100%; object-fit: cover; }
+  /* the camera picture always fills the frame exactly (centre crop), whatever shape the camera gives —
+     otherwise a tall phone video overflows the frame and you'd see its top while the photo keeps its middle */
+  .stage video, .stage canvas.view { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   .stage .mirror { transform: scaleX(-1); }
   /* stickers / particles layer, drawn over the live camera */
   .stage canvas.fx { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
@@ -394,6 +396,50 @@
     .side-foot .primary { padding: 8px 18px; }
     .pattern-grid { grid-template-columns: repeat(4, 1fr); }
     .gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+    /* panels slide sideways instead of growing downwards (steps 2 and 3) */
+    .side .fl-strip, .bp-items, .fx-grid { display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 10px;
+      padding-bottom: 4px; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+    .side .fl-strip::-webkit-scrollbar, .bp-items::-webkit-scrollbar, .fx-grid::-webkit-scrollbar { display: none; }
+    .side .fl-item { flex: 0 0 58px; }
+    .side .fl-item img { width: 58px; height: 58px; }
+    .bp-item { flex: 0 0 auto; min-width: 50px; }
+    .fx-item { flex: 0 0 56px; }
+    .bp-item .ic, .fx-item .fx-ic { width: 42px; height: 42px; }
+    .layerToggle .lt-hint { display: none; }
+
+    /* step 2 = camera-app screen: camera · thumbnails · one sliding panel · shutter, no page scrolling */
+    body[data-step="2"] main > :not(#step2) { display: none; }
+    .shoot .side, .shoot .slots-row, .shoot .bar, .shoot .side-body, .shoot .side-page { width: 100%; min-width: 0; max-width: 100%; }
+    body[data-step="2"] main { padding: 8px 8px 10px; }
+    #step2.card { padding: 0; border: 0; background: none; box-shadow: none; }
+    .shoot { display: flex; flex-direction: column; gap: 8px; }
+    .shoot > div:first-child { display: contents; }
+    .shoot .stage { order: 1; border-width: 3px; border-radius: 18px;
+      width: min(100%, max(200px, 100vh - 392px) * var(--ar, 1.333)) !important;
+      width: min(100%, max(200px, 100svh - 392px) * var(--ar, 1.333)) !important; }
+    .shoot .slot:not(.filled) { font-size: 0 !important; }
+    .shoot .slot:not(.filled)::after { content: attr(data-n); font-size: 14px; font-weight: 600; }
+    .shoot .slots-row { order: 2; flex-wrap: nowrap; margin: 0; gap: 6px; }
+    .shoot .slots-label { display: none; }
+    .shoot .slots { order: 0; flex: 1 1 auto; flex-basis: auto; gap: 5px; }
+    .shoot .slots-row #backToLayout, .shoot .slots-row #toDecorate { order: 0; padding: 7px 11px; font-size: 13px; }
+    .shoot .slots-row #backToLayout { order: -1; }
+    .shoot .slot { height: 46px; border-radius: 9px; }
+    .shoot .slot .x { line-height: 16px; font-size: 10px; padding: 0 4px; }
+    .shoot .side { order: 3; border-radius: 18px; box-shadow: 3px 3px 0 var(--sky-soft); }
+    .shoot .side-tabs { padding: 6px 8px 10px; }
+    .shoot .side-tabs button { padding: 5px 2px; }
+    .shoot .side-body { padding: 14px 10px 8px; height: 150px; overflow-y: auto; }   /* same height on every tab: the camera never jumps */
+    .shoot .bp-head { margin-bottom: 6px; }
+    .shoot .bp-slider { margin-bottom: 8px; }
+    .shoot .layerToggle { padding: 5px 8px; margin-bottom: 8px; }
+    .shoot .fxPanel .label { margin: 8px 0 6px; }
+    .shoot .fl-strength { margin-bottom: 6px; }
+    .shoot .bar { order: 4; margin: 0; gap: 6px; flex-wrap: wrap; justify-content: center; font-size: 13px; }
+    .shoot .bar #shutter { flex: 1 1 100%; padding: 12px; font-size: 16px; }
+    .shoot .bar label { font-size: 13px; }
+    .shoot .bar select, .shoot .bar > button:not(#shutter) { padding: 5px 10px; font-size: 13px; }
   }
 </style>
 </head>
@@ -749,6 +795,7 @@ function goStep(n) {
     const [cw, ch] = layout.cell;
     const stage = document.querySelector('.stage');
     stage.style.aspectRatio = `${cw} / ${ch}`;           // preview shows exactly what each cell keeps
+    stage.style.setProperty('--ar', cw / ch);           // phone layout sizes the stage from this
     // fit the camera in the window height (header, buttons and thumbnails take ~250px)
     stage.style.width = `min(100%, calc(max(320px, 100vh - 250px) * ${cw / ch}))`;
     renderSlots();
@@ -3079,19 +3126,25 @@ function setGlow(g) {
 
 function flash() { const f = $('flash'); f.classList.remove('on'); void f.offsetWidth; f.classList.add('on'); }
 
+// captures keep exactly the layout cell's shape — the same centre crop the camera preview shows
+// (long side 1200px), so what you frame is what you get, also with a portrait phone camera
+function shotSize() {
+  const [cw, ch] = layout.cell, a = cw / ch;
+  return a >= 1 ? [1200, Math.round(1200 / a)] : [Math.round(1200 * a), 1200];
+}
 function grabFrame() {
-  const c = document.createElement('canvas'); c.width = PW; c.height = PH;
-  const ctx = c.getContext('2d');
-  drawCover(ctx, video, video.videoWidth, video.videoHeight, $('mirror').checked);
+  const [w, h] = shotSize();
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  drawCover(c.getContext('2d'), video, video.videoWidth, video.videoHeight, $('mirror').checked, w, h);
   flash();
   return c; // stored without filter, so the filter can still be changed while decorating
 }
-function drawCover(ctx, src, sw0, sh0, mirror) {
-  let sw = sw0, sh = sw0 * PH / PW;
-  if (sh > sh0) { sh = sh0; sw = sh0 * PW / PH; }
+function drawCover(ctx, src, sw0, sh0, mirror, W = PW, H = PH) {
+  let sw = sw0, sh = sw0 * H / W;
+  if (sh > sh0) { sh = sh0; sw = sh0 * W / H; }
   ctx.save();
-  if (mirror) { ctx.translate(PW, 0); ctx.scale(-1, 1); }
-  ctx.drawImage(src, (sw0 - sw) / 2, (sh0 - sh) / 2, sw, sh, 0, 0, PW, PH);
+  if (mirror) { ctx.translate(W, 0); ctx.scale(-1, 1); }
+  ctx.drawImage(src, (sw0 - sw) / 2, (sh0 - sh) / 2, sw, sh, 0, 0, W, H);
   ctx.restore();
 }
 
@@ -3124,8 +3177,9 @@ $('snapInput').onchange = $('fileInput').onchange = async e => {
     if (i < 0) break;
     try {
       const bmp = await createImageBitmap(file);
-      const c = document.createElement('canvas'); c.width = PW; c.height = PH;
-      drawCover(c.getContext('2d'), bmp, bmp.width, bmp.height, false);
+      const [w, h] = shotSize();
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      drawCover(c.getContext('2d'), bmp, bmp.width, bmp.height, false, w, h);
       slots[i] = c;
     } catch { alert(`无法读取：${file.name}`); }
   }
@@ -3139,7 +3193,7 @@ function renderSlots() {
   $('slotsLabel').textContent = `已拍 ${filled} / ${need()} 张`;
   slots.forEach((s, i) => {
     const el = document.createElement('div');
-    el.className = 'slot' + (s ? ' filled' : '');
+    el.className = 'slot' + (s ? ' filled' : ''); el.dataset.n = i + 1;
     el.style.aspectRatio = `${layout.cell[0]} / ${layout.cell[1]}`;
     if (s) {
       const img = new Image(); img.src = beautified(s).toDataURL('image/jpeg', .7);
