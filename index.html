@@ -209,6 +209,15 @@
   .faceNote { margin: 10px 0 0; font-size: 13px; }
   .placeholder { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: #ddd; padding: 16px; }
   .placeholder button { margin: 12px 4px 0; }
+  /* long camera help must stay readable inside a short (phone) stage */
+  .placeholder { overflow-y: auto; place-items: safe center; }
+  #camMsg { line-height: 1.5; }
+  .stage.err { aspect-ratio: auto !important; display: block; }
+  .stage.err > :not(.placeholder) { display: none; }
+  .stage.err .placeholder { position: relative; padding: 22px 16px; }
+  #camMsg b { color: #ffd0dc; }
+  #camMsg small { display: block; margin-top: 6px; font-size: 12px; line-height: 1.7; color: #e9e2dd; text-align: left; }
+  #camMsg small + small { margin-top: 8px; color: #fff3c4; }
   .count { position: absolute; font-size: 120px; font-weight: 700; color: #fff; text-shadow: 0 4px 24px rgba(0,0,0,.5); pointer-events: none; }
   .progress { position: absolute; top: 12px; left: 12px; background: rgba(0,0,0,.55); color: #fff; border-radius: 999px; padding: 4px 12px; font-size: 14px; }
   .progress:empty { display: none; }
@@ -424,6 +433,7 @@
               <div id="camMsg">打开摄像头拍照，或者直接上传照片</div>
               <button id="startBtn">打开摄像头</button>
               <button class="uploadBtn">上传照片</button>
+              <button id="snapBtn" hidden>用系统相机拍</button>
             </div>
           </div>
           <div class="progress" id="progress"></div>
@@ -468,6 +478,7 @@
       </aside>
     </div>
     <input type="file" id="fileInput" accept="image/*" multiple hidden>
+    <input type="file" id="snapInput" accept="image/*" capture="user" hidden>
   </section>
 
   <!-- step 3 -->
@@ -2985,18 +2996,45 @@ async function startCamera() {
   }
   try {
     stopCamera();
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false,
-    });
+    $('camMsg').textContent = '正在打开摄像头…';
+    document.querySelector('.stage').classList.remove('err');
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false,
+      });
+    } catch (e) {
+      // some phones reject the size hints or a busy camera: try once more with the simplest request
+      if (e.name === 'NotAllowedError' || e.name === 'SecurityError') throw e;
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing }, audio: false });
+    }
     video.srcObject = stream;
+    video.play().catch(() => {});   // iOS sometimes needs an explicit play()
     $('placeholder').hidden = true;
     requestAnimationFrame(liveLoop);
     updateShootButtons();
     const cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
     $('switchBtn').disabled = cams.length < 2;
   } catch (e) {
-    $('camMsg').textContent = '无法打开摄像头：' + e.message + '。可以改用上传照片。';
+    $('camMsg').innerHTML = camHelp(e);
+    $('snapBtn').hidden = false;                              // the fallback the help text points to
+    document.querySelector('.stage').classList.add('err');    // let the stage grow to fit the help
   }
+}
+// plain-language help for the usual camera errors (the browser's own message is English and vague)
+function camHelp(e) {
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const inApp = /FBAN|FBAV|Instagram|Line\/|MicroMessenger|KAKAOTALK|Weibo|QQ\//i.test(navigator.userAgent);
+  const tail = '<small>也可以点下面的「用系统相机拍」，直接用手机自带相机拍，不需要权限。</small>';
+  if (e.name === 'NotAllowedError' || e.name === 'SecurityError') {
+    if (inApp) return '<b>这个 App 里的浏览器不能用摄像头</b><br><small>点右上角「…」，选「在浏览器中打开」（Safari 或 Chrome）。</small>' + tail;
+    if (ios) return '<b>摄像头权限被关掉了</b><br><small>① iPhone「设置」→ 往下找到你用的浏览器（Safari / Chrome）→ 打开「相机」<br>'
+      + '② Safari：点地址栏左边的「大小」图标 →「网站设置」→ 相机选「允许」<br>③ 回来刷新页面，再点「打开摄像头」，弹窗时选「允许」</small>' + tail;
+    return '<b>摄像头权限被拒绝了</b><br><small>点地址栏左边的图标 → 权限 / 网站设置 → 相机改成「允许」，然后刷新页面再试。<br>'
+      + '安卓手机还要在系统「设置」→ 应用 → 浏览器 → 权限里打开相机。</small>' + tail;
+  }
+  if (e.name === 'NotFoundError' || e.name === 'OverconstrainedError') return '<b>没有找到可用的摄像头</b>' + tail;
+  if (e.name === 'NotReadableError' || e.name === 'AbortError') return '<b>摄像头正在被别的 App 使用</b><br><small>关掉其它用相机的 App 或网页后再试。</small>' + tail;
+  return '<b>无法打开摄像头</b><br><small>' + (e.message || e.name) + '</small>' + tail;
 }
 function stopCamera() {
   stream?.getTracks().forEach(t => t.stop()); stream = null;
@@ -3077,7 +3115,10 @@ $('shutter').onclick = async () => {
 
 // upload
 document.querySelectorAll('.uploadBtn').forEach(b => b.onclick = () => $('fileInput').click());
-$('fileInput').onchange = async e => {
+// phones: open the system camera app (works without the camera permission); one photo per tap
+$('snapBtn').onclick = () => $('snapInput').click();
+$('snapBtn').hidden = !matchMedia('(pointer: coarse)').matches;
+$('snapInput').onchange = $('fileInput').onchange = async e => {
   for (const file of e.target.files) {
     const i = slots.findIndex(s => !s);
     if (i < 0) break;
