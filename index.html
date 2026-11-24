@@ -4,10 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>4minutes</title>
-<!-- fonts for the caption / text stickers (each one only downloads when it is first used) -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=ZCOOL+KuaiLe&family=ZCOOL+XiaoWei&family=ZCOOL+QingKe+HuangYou&family=Ma+Shan+Zheng&family=Long+Cang&family=Zhi+Mang+Xing&family=Press+Start+2P&family=DotGothic16&family=Silkscreen&family=Pacifico&family=Caveat:wght@700&family=Fredoka:wght@500;700&family=Rubik+Bubbles&family=Gochi+Hand&display=swap">
+<!-- fonts for the title / caption / text stickers, served from this site (Google Fonts is blocked in
+     mainland China). Each font is split by characters; a browser only downloads the pieces it shows. -->
+<link rel="stylesheet" href="vendor/fonts.css">
 <style>
   /* cream-paper scrapbook theme: pastel pink / butter / sky, warm brown ink */
   :root {
@@ -630,7 +629,7 @@
   });
 })();
 </script>
-<script src="cat-stickers.js"></script>
+<script src="cat-stickers.js" id="catScript" async></script>
 <script>
 // ================= data =================
 // Film-style looks, graded in the WebGL shader. All fields optional (0 = no change):
@@ -914,8 +913,8 @@ const BEAUTY_PRESETS = [
 // as seen on screen. "全部" (allProfile) applies to every face that has no profile of its own.
 const makeProfile = src => ({
   beauty: Object.assign({}, ZERO, src ? src.beauty : BEAUTY_PRESETS[1].v),
-  color:  { lip: 0, blush: 0, shadow: 0, brow: 0, iris: 0, ...(src && src.color) },   // index into each colour list
-  style:  { lip: 0, blush: 0, iris: 0, ...(src && src.style) },                       // index into each style list
+  color:  Object.assign({ lip: 0, blush: 0, shadow: 0, brow: 0, iris: 0 }, src && src.color),   // index into each colour list
+  style:  Object.assign({ lip: 0, blush: 0, iris: 0 }, src && src.style),                       // index into each style list
   sticker: src ? src.sticker : null,                                                    // face sticker id
 });
 const allProfile = makeProfile();
@@ -1577,8 +1576,10 @@ function createMakeupMasks() {
 }
 
 // ---- face landmark model (loaded on demand, runs locally in the browser) ----
-const MP = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
-const MP_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+// Served from this site (vendor/mediapipe = @mediapipe/tasks-vision 0.10.14 + the float16 face model),
+// not from jsDelivr / Google storage, which are blocked or slow in mainland China.
+const MP = new URL('vendor/mediapipe', location.href).href;
+const MP_MODEL = new URL('vendor/mediapipe/face_landmarker.task', location.href).href;
 let faceLive = null, faceStill = null, faceLoading = null, faceState = 'idle'; // idle | loading | ready | error
 function ensureFace() {
   if (!wantsFace() || faceLoading) return faceLoading;
@@ -4486,19 +4487,34 @@ const STICKER_LIB = [
     ['( ˘ ³˘)♡', '#ffe1ec', '#d6336c'], ['meow ♡', '#ffe1ec', '#d6336c'], ['× × × × ×', '#d6ecff', '#4f86c6'],
     ['✧ ♡ LOVE ♡ ✧', '#ffd1e3', '#e8457f'], ['°˖✧ ✿ ✧˖°', '#e3d6ff', '#7d5bc9'], ['(ᗒᗨᗕ)', '#d8f5df', '#3e9a5f'],
     ['ヽ(・∀・)ﾉ', '#fff3c4', '#b7791f'], ['(=^･ω･^=)', '#ffe1ec', '#d6336c'], ['so cute!', '#ffffff', '#e8457f'],
-  ].map(([t, bg, fg], i) => ({ g: '颜文字', id: 'kao-' + i, ...kaomoji(t, bg, fg) })),
+  ].map(([t, bg, fg], i) => Object.assign({ g: '颜文字', id: 'kao-' + i }, kaomoji(t, bg, fg))),
 ];
 // cat meme stickers: the cut-out pictures, drawn as they are (box width 1 × s, height by aspect)
-[...(window.CAT_STICKERS || [])].reverse().forEach(cat => {     // reversed + unshift = original order, first in the list
-  const img = new Image();
-  img.onload = () => { if (typeof paintPreview === 'function' && placed.some(p => p.id === cat.id)) paintPreview(); };
-  img.src = cat.src;
-  const ar = cat.h / cat.w;
-  STICKER_LIB.unshift({ g: '猫猫', id: cat.id, w: 1, h: ar, thumb: cat.src,
-    draw: (c, s) => { if (img.complete && img.naturalWidth) c.drawImage(img, -s / 2, -s * ar / 2, s, s * ar); } });
-});
 STICKER_LIB.forEach(st => { st.w = st.w || 1; st.h = st.h || 1; });
 const STICKER_MAP = Object.fromEntries(STICKER_LIB.map(st => [st.id, st]));
+// cat-stickers.js (3.4 MB) loads in the background (async), so the page works before it arrives;
+// the cats are added to the library whenever it's there
+let catsAdded = false, stickerUiReady = false;
+function addCatStickers() {
+  if (catsAdded || !window.CAT_STICKERS) return;
+  catsAdded = true;
+  window.CAT_STICKERS.slice().reverse().forEach(cat => {     // reversed + unshift = original order, first in the list
+    const img = new Image();
+    img.onload = () => { if (typeof paintPreview === 'function' && placed.some(p => p.id === cat.id)) paintPreview(); };
+    img.src = cat.src;
+    const ar = cat.h / cat.w;
+    const st = { g: '猫猫', id: cat.id, w: 1, h: ar, thumb: cat.src,
+      draw: (c, s) => { if (img.complete && img.naturalWidth) c.drawImage(img, -s / 2, -s * ar / 2, s, s * ar); } };
+    STICKER_LIB.unshift(st); STICKER_MAP[st.id] = st;
+  });
+  if (stickerUiReady) { renderStickerGrid(); if (document.body.dataset.step === '3') redraw(); }
+}
+addCatStickers();
+let catsFailed = false;
+if (!catsAdded) {
+  $('catScript').addEventListener('load', addCatStickers);
+  $('catScript').addEventListener('error', () => { catsFailed = true; if (stickerUiReady) renderStickerGrid(); });
+}
 
 // the polka heart frame needs a heart path appended to the current path (for even-odd rings)
 function pHeartTo(c, s) {
@@ -4558,6 +4574,7 @@ function renderStickerGrid() {
     $('stGroups').appendChild(b);
   });
   const grid = $('stGrid'); grid.innerHTML = '';
+  if (stGroup === '猫猫' && !catsAdded) grid.innerHTML = `<p class="empty" style="grid-column:1/-1">${catsFailed ? '猫猫贴纸没加载成功，刷新页面再试试' : '猫猫贴纸加载中…'}</p>`;
   STICKER_LIB.filter(st => st.g === stGroup).forEach(st => {
     const b = document.createElement('button'); b.title = '添加';
     const img = new Image(); img.alt = ''; img.src = st.thumb || thumbCache[st.id] || (thumbCache[st.id] = stickerThumb(st));
@@ -4595,7 +4612,7 @@ document.addEventListener('keydown', e => {
     e.preventDefault(); removeSticker(selSticker);
   }
 });
-renderStickerGrid();
+renderStickerGrid(); stickerUiReady = true;
 
 // ---- preview with an interactive layer on top ----
 const pv = { wrap: document.createElement('div'), out: document.createElement('canvas'), ui: document.createElement('canvas'), base: null, marks: [] };
